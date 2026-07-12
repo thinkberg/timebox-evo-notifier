@@ -1,101 +1,80 @@
 TRADE STUDY                                                   TS-26-002
 
-SUBJECT:      Code production quality - speed-first development vs
-              built-in security and readability, measured on this
-              project's own history
+SUBJECT:      AI-agent code production without upfront security
+              rules - the issues it created, and what caught them
 DATE:         2026-07-12
 STATUS:       FINAL
 
 
-SUMMARY. This project went from empty directory to a deployed
-notification daemon in one day, produced speed-first: the smallest
-working change, iterated live against the hardware, with a single
-structured review pass at the end. That review (findings applied in
-commit abe5bee) found one serious security defect that had been
-RUNNING for hours - a BlueZ agent that silently auto-accepted
-pairing for any nearby device, system-wide - plus a robustness hole
-and assorted readability debt. Total remediation cost: about one
-hour. The study weighs whether the production style was right, and
-concludes: speed-first was correct for everything except code at
-trust boundaries, where the debt is live while it exists. The
-refinement is a category rule, not more process.
+SUMMARY. The code in this repository was written in one day by an
+AI agent, instructed to get a stubborn device working - not to
+write secure code. It got the device working. It also created five
+security issues along the way. None were caught while writing;
+all were caught by one review at the end and fixed within an hour.
+The lesson is simple: an agent solves the problem in front of it.
+If security rules are not part of the task, they are not part of
+the code. Give the rules upfront; keep the closing review anyway.
 
-1. BACKGROUND. Production conditions: unknown, undocumented device
-behavior discoverable only empirically (dozens of connect/teardown
-experiments, most code discarded - the entire classic-SPP path was
-written, tested, and deleted within an hour). Under those
-conditions, upfront design rigor has nothing firm to attach to;
-iteration speed is what produces knowledge. The end-of-day review
-was requested explicitly ("critical review for risks and
-readability") rather than scheduled by habit.
+1. BACKGROUND. The task was exploratory: the device's behavior was
+undocumented and had to be discovered by trial. The agent wrote,
+tested, and discarded code in fast cycles - a good fit for that
+job. Security was never stated as a requirement. At the end of the
+day a review was explicitly requested ("critical review for
+potential risks"); its findings were fixed in commit abe5bee and
+re-verified against the device.
 
-2. EVIDENCE.
+2. THE ISSUES THAT AROSE.
 
-   2.1 Yield of the review pass: 8 risk findings (1 serious, A1;
-   1 robustness, A5; FIFO hardening; write interleaving; journal
-   privacy; 3 minor) and 6 readability findings, from ~880 lines
-   of Python. All fixed in one commit, verified against the
-   hardware the same evening.
+   2.1 The Bluetooth pairing agent answered for EVERY device.
+   Written to auto-answer the box's PIN prompt, it was registered
+   as the desktop's default agent and accepted pairing and
+   authorization requests from any nearby device, not just the
+   box. In effect it disabled Bluetooth pairing consent for the
+   whole computer - and it ran that way for about three hours,
+   as an always-on service. This was the serious one.
 
-   2.2 The serious defect (A1) was not exotic. The pairing agent
-   was written in one minute to solve an immediate problem (PIN
-   popups unanswerable by hand) and did its job; that it also
-   answered for every OTHER device on the desktop was a scoping
-   question nobody asked at write time. It ran ~3 hours as a
-   systemd service before the review caught it. Window of
-   exposure, not detection difficulty, is the cost driver.
+   2.2 Notification input was not validated. A single malformed
+   request on the FIFO (for example count: "abc") raised an
+   exception that the daemon answered by tearing down its BLE
+   link - a self-inflicted denial of service costing a ~15 s
+   reconnect, triggerable by one typo.
 
-   2.3 The robustness defect (A5) followed the same pattern: FIFO
-   input was parsed where used, so one malformed value tore down
-   the healthy BLE link. Cheap to fix (one validation function),
-   invisible until an adversarial reading asked "what happens on
-   junk input?".
+   2.3 The FIFO could end up world-writable. If the runtime
+   directory variable was missing, the command pipe fell back to
+   /tmp, where any local user could inject notifications or make
+   the daemon play arbitrary files. It also opened a pre-existing
+   file at that path without checking what it was.
 
-   2.4 Readability debt behaved differently: magic numbers,
-   stringly-typed state, duplicated audio logic. None of it hurt
-   while it existed; all of it was batch-fixed mechanically in
-   the same pass. Deferring it cost nothing.
+   2.4 Notification text went into the system journal. Every
+   request was logged in full, so private message content would
+   have been retained indefinitely by journald.
 
-   2.5 Where care WAS taken at write time, it held up: docstrings
-   recording WHY (bearer trap, box connection policy) survived
-   every refactor; secrets moved to env config the moment the
-   requirement appeared and never leaked into the repo or memos.
+   2.5 Device identifiers were hardcoded. The box's MAC address
+   and Bluetooth PIN sat in code, docs, and even test files until
+   their removal was requested; secrets-in-code was the default,
+   configuration the afterthought.
 
-3. OPTIONS.
+3. WHY THEY AROSE. Not carelessness in the human sense: each piece
+of code solved its immediate problem correctly and was verified to
+work. The gap is systematic - an agent optimizes for the stated
+goal, and "works" was the only stated goal. Every one of the five
+issues is the answer to a question that was never asked at write
+time: who else can reach this agent? what happens on junk input?
+who else can write this path? who reads this log? where do secrets
+live? A human reviewer asking exactly those questions found all
+five in one pass.
 
-   3.1 OPTION A - rigor-first: threat-model and polish each
-   component before writing. Would have prevented A1, but the
-   day's defining work was discovering firmware behavior through
-   discarded experiments; polishing throwaway code is pure loss,
-   and most security surface (agent, FIFO, daemon) did not exist
-   until the final hours.
+4. WHAT CAUGHT THEM, AND THE COST. One explicitly requested review:
+five findings, one hour of fixes, same-day hardware verification.
+Detection was cheap. The real cost was exposure time - the pairing
+hole ran for hours and would have run indefinitely, because
+nothing in normal operation would ever have surfaced it.
 
-   3.2 OPTION B - speed-first with no review. The actual state at
-   19:00: the A1 hole persists indefinitely in a service that
-   starts at every login. Unacceptable ending; the cheapness of
-   the review (one hour) removes any excuse.
-
-   3.3 OPTION C - speed-first plus end-of-cycle critical review
-   (what happened). Caught everything, cheaply, with full
-   hardware verification. Residual cost: the exposure window
-   between writing a trust-boundary defect and reviewing it.
-
-   3.4 OPTION D - speed-first plus a write-time gate ONLY at
-   trust boundaries: anything that answers for the system
-   (agents, authorization), parses external input, or persists
-   data gets its scoping questions asked in the moment; all other
-   code stays lazy until the batch review. Costs minutes, not
-   momentum; would have closed A1 and A5 at birth.
-
-4. DECISION. Option D going forward, with Option C's end-of-cycle
-review retained (it also carried all the readability repair). The
-gate is a habit, not tooling: at a trust boundary, ask "who else
-can reach this?" before moving on.
-
-5. GENERAL CONCLUSION. Security debt and readability debt are
-different substances. Readability debt is inert - it costs nothing
-until touched and batches perfectly. Security debt at a trust
-boundary is live - it runs, exposed, from the moment it ships,
-and its cost is measured in exposure time. A production style may
-defer the first freely; the second must be paid at write time,
-and distinguishing the two costs one question per component.
+5. DECISION. For future AI-assisted work: state the security rules
+in the task, upfront, as bluntly as the functional goal. A short
+standing list covers this project's entire incident set: scope
+anything that answers on behalf of the system; validate all
+external input; never fall back to shared paths; keep private
+content out of logs; secrets come from configuration, never code.
+And still run the closing review - the rules narrow the gap, the
+review is what proves it closed.
