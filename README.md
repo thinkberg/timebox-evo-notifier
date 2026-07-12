@@ -128,6 +128,23 @@ make -j8; echo "{\"text\": \"make: exit $?\"}" > $XDG_RUNTIME_DIR/timebox.fifo
 0 * * * * echo '{"text": "'"$(date +\%H:00)"'", "silent": true}' > /run/user/1000/timebox.fifo
 ```
 
+## Security notes
+
+- **The panel is a public display.** The box's BLE side is unencrypted
+  and unauthenticated by design (its firmware never pairs the LE link):
+  everything you display — including notification text — is readable by
+  a BLE sniffer in radio range, and anyone in range can connect and draw
+  on the panel. Don't send confidential content. Audio (A2DP) is
+  link-encrypted via the classic bond.
+- **The FIFO is your trust boundary.** It is created 0600 inside
+  `$XDG_RUNTIME_DIR` (the daemon refuses to start without it); whoever
+  can write it can display content, start the visualizer, and play any
+  file readable by your user (`sound` key).
+- The daemon registers a Bluetooth agent that auto-answers pairing and
+  authorization **only for the configured box address**; requests from
+  any other device are rejected.
+- The daemon's journal log records notification keys, not content.
+
 ## Troubleshooting
 
 - **First notification after box power-cycle is slow (~15 s)** —

@@ -11,5 +11,13 @@ ExecStart=%h/Documents/Source/timebox/.venv/bin/python timebox_daemon.py
 Restart=on-failure
 RestartSec=15
 
+# Sandbox: read-only system and home, except the runtime dir (FIFO,
+# PipeWire sockets) and divoom_protocol's session state file.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t -%h/.divoom-protocol
+
 [Install]
 WantedBy=default.target

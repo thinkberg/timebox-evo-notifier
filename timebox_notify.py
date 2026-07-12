@@ -18,12 +18,16 @@ System prerequisites (one-time):
     briefly kicking the classic link and racing the reconnect.
   * If sinks stop appearing after a bluetoothd restart:
         systemctl --user restart wireplumber
+
+timebox_daemon.py imports this module as its library (font, rendering,
+agent, link management); the CLI entry point lives at the bottom.
 """
 
 import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,10 +37,12 @@ import warnings
 warnings.filterwarnings("ignore", message="Using default MTU value.*")
 
 from bleak import BleakScanner
-from dbus_fast import BusType
+from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus
 from dbus_fast.service import ServiceInterface, method
 from divoom_protocol import DivoomClient
+
+# --- divoom_protocol encoder patch ------------------------------------------
 
 # divoom_protocol 0.2.0 bug: encode_image() overflows the palette-count byte
 # on frames with 256 unique colors (wire format wants 0x00 for 256). Patch at
@@ -70,8 +76,17 @@ DEFAULT_ADDRESS = os.environ.get("TIMEBOX_ADDRESS", "")
 DEFAULT_SOUND = "/usr/share/sounds/ocean/stereo/message-new-instant.oga"
 A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
 
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+
+
+def valid_address(address: str) -> bool:
+    return bool(_MAC_RE.match(address))
+
+
 RGB = tuple[int, int, int]
 Pixels = list[RGB]
+
+# --- 3x5 font & frame rendering (shared with the daemon) ---------------------
 
 # Compact 3x5 digits, stored row by row.
 DIGITS: dict[str, tuple[str, ...]] = {
@@ -260,37 +275,53 @@ def render_notification(
     return pixels
 
 
+# --- BlueZ pairing agent ------------------------------------------------------
+
 PIN = os.environ.get("TIMEBOX_PIN", "0000")
 AGENT_PATH = "/timebox/agent"
 
 
 class PinAgent(ServiceInterface):
     """Answers the box's legacy PIN requests and authorizes its incoming
-    audio connections while a notification is being delivered. Without this,
-    classic connects stall in a desktop PIN popup or get refused."""
+    audio connections. Without this, classic connects stall in a desktop
+    PIN popup or get refused.
 
-    def __init__(self) -> None:
+    Scoped strictly to the configured box: while registered as the default
+    agent it fields pairing requests for the whole desktop, so anything
+    that is not the box is rejected — otherwise a nearby hostile device
+    could pair with the host silently."""
+
+    def __init__(self, address: str) -> None:
         super().__init__("org.bluez.Agent1")
+        self._dev_suffix = "dev_" + address.replace(":", "_").lower()
+
+    def _check(self, device: str) -> None:
+        if not device.lower().endswith(self._dev_suffix):
+            raise DBusError("org.bluez.Error.Rejected", "not the TimeBox")
 
     @method()
     def RequestPinCode(self, device: "o") -> "s":
+        self._check(device)
         return PIN
 
     @method()
     def RequestPasskey(self, device: "o") -> "u":
+        self._check(device)
+        if not PIN.isdigit():
+            raise DBusError("org.bluez.Error.Rejected", "TIMEBOX_PIN not numeric")
         return int(PIN)
 
     @method()
     def RequestConfirmation(self, device: "o", passkey: "u") -> None:
-        pass
+        self._check(device)
 
     @method()
     def RequestAuthorization(self, device: "o") -> None:
-        pass
+        self._check(device)
 
     @method()
     def AuthorizeService(self, device: "o", uuid: "s") -> None:
-        pass
+        self._check(device)
 
     @method()
     def Cancel(self) -> None:
@@ -301,10 +332,11 @@ class PinAgent(ServiceInterface):
         pass
 
 
-async def start_agent() -> MessageBus:
-    """Register as default BlueZ agent for the lifetime of this process."""
+async def start_agent(address: str) -> MessageBus:
+    """Register as default BlueZ agent (scoped to `address`) for the
+    lifetime of this process."""
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    bus.export(AGENT_PATH, PinAgent())
+    bus.export(AGENT_PATH, PinAgent(address))
     intro = await bus.introspect("org.bluez", "/org/bluez")
     mgr = bus.get_proxy_object("org.bluez", "/org/bluez", intro).get_interface(
         "org.bluez.AgentManager1"
@@ -312,6 +344,9 @@ async def start_agent() -> MessageBus:
     await mgr.call_register_agent(AGENT_PATH, "KeyboardOnly")
     await mgr.call_request_default_agent(AGENT_PATH)
     return bus
+
+
+# --- Bluetooth link management: LE control window + A2DP audio ----------------
 
 
 def btctl(*args: str, timeout: int = 25) -> tuple[int, str]:
@@ -338,7 +373,9 @@ async def connect_le(address: str) -> DivoomClient:
         if device is None:
             # Not advertising — usually because the classic link is up. Kick
             # it (the box only re-pages after real link loss, not after this
-            # clean disconnect, so audio needs re-dialing afterwards).
+            # clean disconnect, so audio needs re-dialing afterwards). Not on
+            # the final attempt: no scan follows, the kick would only cost us
+            # the audio link for nothing.
             if attempt < 4:
                 _, info = btctl("info", address)
                 if "Connected: yes" in info:
@@ -414,17 +451,30 @@ def wait_for_sink(address: str, timeout_s: float) -> str | None:
     return None
 
 
-def play_sound(address: str, sound: str) -> None:
-    # The box (trusted) re-pages us moments after losing its classic link,
-    # so usually the sink just appears on its own alongside the live BLE link.
-    sink = wait_for_sink(address, 15)
+def bring_up_audio(address: str, initial_wait: float = 15) -> str:
+    """Return the box's PipeWire sink, waiting/dialing as needed.
+
+    The box (trusted) re-pages us moments after losing its classic link, so
+    often the sink just appears on its own alongside the live BLE link —
+    hence wait first, dial only if it doesn't come. `initial_wait` is long
+    for one-shot CLI use (box may be mid-repage) and short in the daemon
+    (which retries per notification anyway).
+    """
+    sink = wait_for_sink(address, initial_wait)
     if sink is None:
-        # Box didn't come to us — dial out.
         connect_a2dp(address)
         sink = wait_for_sink(address, 8)
     if sink is None:
         raise RuntimeError("TimeBox audio sink did not appear")
+    return sink
+
+
+def play_sound(address: str, sound: str, initial_wait: float = 15) -> None:
+    sink = bring_up_audio(address, initial_wait)
     subprocess.run(["pw-play", "--target", sink, sound], check=True)
+
+
+# --- standalone CLI -----------------------------------------------------------
 
 
 async def send_notification(args: argparse.Namespace) -> None:
@@ -435,7 +485,7 @@ async def send_notification(args: argparse.Namespace) -> None:
         background=args.background,
     )
 
-    agent_bus = await start_agent()
+    agent_bus = await start_agent(args.address)
     try:
         client = await connect_le(args.address)
         try:
@@ -482,8 +532,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=range(0, 101),
         metavar="0-100",
-        default=80,
-        help="Display brightness (default: 80)",
+        default=None,
+        help="Display brightness (default: leave unchanged)",
     )
     parser.add_argument(
         "--icon-color",
@@ -521,9 +571,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def try_daemon(args: argparse.Namespace) -> bool:
     """If timebox_daemon.py is running, hand the notification to it."""
-    fifo = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "timebox.fifo")
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        return False  # never fall back to a world-writable /tmp FIFO
+    if args.address and args.address != DEFAULT_ADDRESS:
+        return False  # daemon serves $TIMEBOX_ADDRESS; a different box is ours
     try:
-        fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        fd = os.open(os.path.join(runtime_dir, "timebox.fifo"),
+                     os.O_WRONLY | os.O_NONBLOCK)
     except OSError:
         return False  # no FIFO or no reader — do it ourselves
     params = {
@@ -531,10 +586,11 @@ def try_daemon(args: argparse.Namespace) -> bool:
         "icon_color": list(args.icon_color),
         "number_color": list(args.number_color),
         "background": list(args.background),
-        "brightness": args.brightness,
         "sound": args.sound,
         "silent": args.silent,
     }
+    if args.brightness is not None:
+        params["brightness"] = args.brightness
     if args.text:
         params["text"] = args.text
     with os.fdopen(fd, "w") as f:
@@ -551,6 +607,11 @@ def main() -> int:
 
     if not args.address:
         print("error: no address — set TIMEBOX_ADDRESS or pass --address",
+              file=sys.stderr)
+        return 2
+
+    if not valid_address(args.address):
+        print(f"error: {args.address!r} is not a Bluetooth MAC (AA:BB:CC:DD:EE:FF)",
               file=sys.stderr)
         return 2
 
