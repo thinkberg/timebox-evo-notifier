@@ -1,0 +1,91 @@
+TRADE STUDY                                                   TS-26-001
+
+SUBJECT:      Delivering notification sound through the TimeBox Evo
+              speaker - options considered and selection
+DATE:         2026-07-12
+STATUS:       FINAL - option D implemented; box audio since retired
+              from daily use (see 4)
+
+
+SUMMARY. Getting sound out of the box unattended was the hardest
+part of the notification pipeline - display control never failed
+the same way. Five approaches were tried or assessed over one day
+against five criteria. Best technical option: trust the box and
+let IT own the audio link (box-initiated A2DP, resident daemon
+holding all links). The deciding observation: the box answers
+almost no incoming classic page once settled, but pages the host
+itself at power-on and after link loss - so any host-dialed design
+fights the firmware, while a box-initiated design merely has to
+not hang up. Practical outcome: even the best option is only as
+reliable as the box's last power-on, and box audio has since been
+retired from daily use - notifications run display-only, which
+never failed once.
+
+1. REQUIREMENT. Notification sound emitted by the box speaker,
+unattended (no popups, no manual steps), coexisting with BLE
+display control, recovering without intervention after the box
+power-cycles. Reference findings: TBX-26-001 (2.4, 2.5, 2.6).
+
+2. CRITERIA. (a) unattended reliability, (b) latency from request
+to sound, (c) zero user interaction, (d) coexistence with the BLE
+link, (e) recovery after box power-cycle.
+
+3. OPTIONS.
+
+   3.1 OPTION A - classic SPP control + A2DP on one classic link.
+   The original hypothesis (one bearer for everything). Dead on
+   arrival: this hardware generation serves no control protocol
+   on its SPP channel (TBX-26-001 (2.1)). Eliminated.
+
+   3.2 OPTION B - host-dialed A2DP per notification. Works only
+   in narrow windows (box radio active right after boot or during
+   fresh LE activity). A settled box's page scan naps: dials time
+   out (br-connection-canceled), retries stack into
+   br-connection-busy. Fails (a), (b); kept only as fallback.
+
+   3.3 OPTION C - box untrusted, incoming audio refused, dial on
+   demand. Rejected by evidence: the box pages persistently after
+   link loss; refused/unanswered attempts (including legacy PIN
+   prompts stranded in desktop popups) hang half-open and block
+   the BR slot for our own dials. Made everything worse - the
+   busy storms that dominated the debugging day. Fails (a), (c).
+
+   3.4 OPTION D - box trusted, box-initiated audio, resident
+   daemon (SELECTED). The box's boot-page latches A2DP silently;
+   the daemon holds BLE alongside (LE advertises next to a live
+   classic link) and never cleanly disconnects what it wants
+   back. Sound latency is near zero when latched (sink already
+   present). Weakness: after the daemon must kick classic to win
+   an LE window (only when the box is NOT advertising), the box
+   does not re-page until the next power-on - mitigated by
+   scan-first connect logic that avoids kicking, plus Option B
+   as in-run fallback. Meets (a)-(e), with (e) by design.
+
+   3.5 OPTION E - alternatives not pursued. PC-speaker sound:
+   violates the requirement (sound from the box). Second BT
+   adapter: hardware cost, unproven against the same firmware
+   policy. Box-internal alarm/buzzer sounds: no known opcode on
+   this protocol generation; would remove A2DP entirely if ever
+   decoded - worth revisiting if the protocol work continues.
+
+4. DECISION. Option D was implemented, with Option B retained as
+the in-run fallback dial (bearer flipped to bredr for the attempt,
+TBX-26-001 (2.3)) and the daemon's agent answering PIN and
+authorization requests so no path ever waits on a desktop popup.
+In operation, however, box audio is no longer used day to day:
+sound depends on the box's boot-page latch, and after any link
+churn it stays silent until the next power-cycle. Notifications
+run display-only (silent), where the pipeline has a zero failure
+record; sound, when wanted, comes from the PC. The capability
+remains in the daemon at no maintenance cost - a latched box
+simply makes the chime work again.
+
+5. GENERAL CONCLUSION. Two lessons. First: when a peripheral has
+a firm connection policy baked into firmware, enumerate who may
+initiate each link direction before designing around outgoing
+calls - every failed option assumed the host controls the classic
+link; the least-bad one concedes that the box does. Second:
+relaxing the requirement is a legitimate trade outcome. The sound
+requirement ("ideally even with sound") was the project's softest
+and consumed most of the engineering day; the display path that
+carries the actual function never needed any of it.
