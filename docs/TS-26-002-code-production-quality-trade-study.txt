@@ -1,0 +1,101 @@
+TRADE STUDY                                                   TS-26-002
+
+SUBJECT:      Code production quality - speed-first development vs
+              built-in security and readability, measured on this
+              project's own history
+DATE:         2026-07-12
+STATUS:       FINAL
+
+
+SUMMARY. This project went from empty directory to a deployed
+notification daemon in one day, produced speed-first: the smallest
+working change, iterated live against the hardware, with a single
+structured review pass at the end. That review (findings applied in
+commit abe5bee) found one serious security defect that had been
+RUNNING for hours - a BlueZ agent that silently auto-accepted
+pairing for any nearby device, system-wide - plus a robustness hole
+and assorted readability debt. Total remediation cost: about one
+hour. The study weighs whether the production style was right, and
+concludes: speed-first was correct for everything except code at
+trust boundaries, where the debt is live while it exists. The
+refinement is a category rule, not more process.
+
+1. BACKGROUND. Production conditions: unknown, undocumented device
+behavior discoverable only empirically (dozens of connect/teardown
+experiments, most code discarded - the entire classic-SPP path was
+written, tested, and deleted within an hour). Under those
+conditions, upfront design rigor has nothing firm to attach to;
+iteration speed is what produces knowledge. The end-of-day review
+was requested explicitly ("critical review for risks and
+readability") rather than scheduled by habit.
+
+2. EVIDENCE.
+
+   2.1 Yield of the review pass: 8 risk findings (1 serious, A1;
+   1 robustness, A5; FIFO hardening; write interleaving; journal
+   privacy; 3 minor) and 6 readability findings, from ~880 lines
+   of Python. All fixed in one commit, verified against the
+   hardware the same evening.
+
+   2.2 The serious defect (A1) was not exotic. The pairing agent
+   was written in one minute to solve an immediate problem (PIN
+   popups unanswerable by hand) and did its job; that it also
+   answered for every OTHER device on the desktop was a scoping
+   question nobody asked at write time. It ran ~3 hours as a
+   systemd service before the review caught it. Window of
+   exposure, not detection difficulty, is the cost driver.
+
+   2.3 The robustness defect (A5) followed the same pattern: FIFO
+   input was parsed where used, so one malformed value tore down
+   the healthy BLE link. Cheap to fix (one validation function),
+   invisible until an adversarial reading asked "what happens on
+   junk input?".
+
+   2.4 Readability debt behaved differently: magic numbers,
+   stringly-typed state, duplicated audio logic. None of it hurt
+   while it existed; all of it was batch-fixed mechanically in
+   the same pass. Deferring it cost nothing.
+
+   2.5 Where care WAS taken at write time, it held up: docstrings
+   recording WHY (bearer trap, box connection policy) survived
+   every refactor; secrets moved to env config the moment the
+   requirement appeared and never leaked into the repo or memos.
+
+3. OPTIONS.
+
+   3.1 OPTION A - rigor-first: threat-model and polish each
+   component before writing. Would have prevented A1, but the
+   day's defining work was discovering firmware behavior through
+   discarded experiments; polishing throwaway code is pure loss,
+   and most security surface (agent, FIFO, daemon) did not exist
+   until the final hours.
+
+   3.2 OPTION B - speed-first with no review. The actual state at
+   19:00: the A1 hole persists indefinitely in a service that
+   starts at every login. Unacceptable ending; the cheapness of
+   the review (one hour) removes any excuse.
+
+   3.3 OPTION C - speed-first plus end-of-cycle critical review
+   (what happened). Caught everything, cheaply, with full
+   hardware verification. Residual cost: the exposure window
+   between writing a trust-boundary defect and reviewing it.
+
+   3.4 OPTION D - speed-first plus a write-time gate ONLY at
+   trust boundaries: anything that answers for the system
+   (agents, authorization), parses external input, or persists
+   data gets its scoping questions asked in the moment; all other
+   code stays lazy until the batch review. Costs minutes, not
+   momentum; would have closed A1 and A5 at birth.
+
+4. DECISION. Option D going forward, with Option C's end-of-cycle
+review retained (it also carried all the readability repair). The
+gate is a habit, not tooling: at a trust boundary, ask "who else
+can reach this?" before moving on.
+
+5. GENERAL CONCLUSION. Security debt and readability debt are
+different substances. Readability debt is inert - it costs nothing
+until touched and batches perfectly. Security debt at a trust
+boundary is live - it runs, exposed, from the moment it ships,
+and its cost is measured in exposure time. A production style may
+defer the first freely; the second must be paid at write time,
+and distinguishing the two costs one question per component.
