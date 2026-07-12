@@ -276,6 +276,21 @@ def _spawn(coro, label: str) -> asyncio.Task:
     return task
 
 
+async def initial_audio() -> None:
+    """Latch the box's audio link at startup, in the background.
+
+    Holds the sound lock while dialing, so a notification arriving meanwhile
+    skips its chime instead of stacking a second dial (stacked dials are what
+    wedge the box into br-connection-busy).
+    """
+    async with _sound_lock:
+        try:
+            sink = await asyncio.to_thread(bring_up_audio, DEFAULT_ADDRESS, 3)
+            print(f"audio ready: {sink}", flush=True)
+        except Exception as exc:
+            print(f"audio not ready ({exc}) — will retry per notification", flush=True)
+
+
 async def play(params: dict) -> None:
     if _sound_lock.locked():
         print("sound skipped — audio attempt already in flight", flush=True)
@@ -377,14 +392,12 @@ async def main() -> None:
     await client.set_brightness(80)
     print("LE control connected", flush=True)
 
-    try:
-        sink = await asyncio.to_thread(bring_up_audio, DEFAULT_ADDRESS, 3)
-        print(f"audio ready: {sink}", flush=True)
-    except Exception as exc:
-        print(f"audio not ready yet ({exc}) — will retry per notification", flush=True)
-
+    # Serve requests as soon as the display works. Audio bring-up can take a
+    # minute against a box that isn't answering pages, and notifications
+    # written in that window would otherwise be dropped.
     path = fifo_path()
     print(f"listening on {path}", flush=True)
+    _spawn(initial_audio(), "audio bring-up")
 
     # ponytail: reconnect-on-demand; add a keepalive task if first-notify
     # latency after long idle turns out to bother.
