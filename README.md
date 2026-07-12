@@ -62,18 +62,26 @@ mkdir -p ~/.config/timebox
 printf 'TIMEBOX_ADDRESS=<box-mac>\nTIMEBOX_PIN=<pin>\n' > ~/.config/timebox/env
 chmod 600 ~/.config/timebox/env
 
-# Link, enable and start the unit straight from this repo
-systemctl --user enable --now $(pwd)/timebox-daemon.service
+# App + venv into ~/.local/share/timebox
+mkdir -p ~/.local/share/timebox
+cp timebox_daemon.py timebox_bridge.py timebox_notify.py ~/.local/share/timebox/
+python -m venv ~/.local/share/timebox/.venv
+~/.local/share/timebox/.venv/bin/pip install bleak dbus_fast divoom_protocol
+
+# Unit into ~/.config/systemd/user, then enable and start
+cp timebox-daemon.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now timebox-daemon
 
 # Logs / status
 journalctl --user -u timebox-daemon -f
 systemctl --user status timebox-daemon
 ```
 
-The unit assumes the repo lives at `~/Documents/Source/timebox` —
-adjust `WorkingDirectory`/`ExecStart` in `timebox-daemon.service`
-if yours is elsewhere. It restarts automatically (15 s backoff) if
-the box is unreachable.
+The units run the copy in `~/.local/share/timebox` — adjust
+`WorkingDirectory`/`ExecStart` in the `.service` files if you install
+elsewhere. The daemon restarts automatically (15 s backoff) if the
+box is unreachable.
 
 Then notifications are one shell line — JSON per line into the FIFO:
 
@@ -130,7 +138,9 @@ count is ever sent to the box, never the message text.
 #   dbus-monitor --session "interface='org.freedesktop.Notifications'"
 echo 'TIMEBOX_ONLY_APPS=Thunderbird,Nextcloud' >> ~/.config/timebox/env
 
-systemctl --user enable --now $(pwd)/timebox-bridge.service
+cp timebox-bridge.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now timebox-bridge
 journalctl --user -u timebox-bridge -f
 ```
 

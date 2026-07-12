@@ -4,8 +4,8 @@ Description=TimeBox Evo notification daemon
 [Service]
 # TIMEBOX_ADDRESS (required) and TIMEBOX_PIN (if your box asks) live here:
 EnvironmentFile=%h/.config/timebox/env
-WorkingDirectory=%h/Documents/Source/timebox
-ExecStart=%h/Documents/Source/timebox/.venv/bin/python timebox_daemon.py
+WorkingDirectory=%h/.local/share/timebox
+ExecStart=%h/.local/share/timebox/.venv/bin/python timebox_daemon.py
 # connect_le gives up after 5 attempts; let systemd retry until the box is
 # reachable (boot, box off, adapter down).
 Restart=on-failure
