@@ -1,5 +1,14 @@
 # timebox
 
+> **⚠️ This repository is an experiment in AI-assisted development.**
+> Nearly all code and documentation here was written by an AI agent in
+> a single day, driven by live trial against the hardware. It works,
+> and it was security-reviewed at the end ([TS-26-002](docs/TS-26-002-code-production-quality-trade-study.txt)
+> records the five security issues that process created and how they
+> were caught) — but use it with the appropriate skepticism: residual
+> risks may remain. Read the code before running it, especially the
+> parts that touch pairing, the system D-Bus, and your audio stack.
+
 Notifications on a Divoom TimeBox Evo from Linux: icons or scrolling
 text on the 16x16 panel, with a sound from the box speaker. Control
 goes over BLE, sound over classic A2DP, both held simultaneously.
