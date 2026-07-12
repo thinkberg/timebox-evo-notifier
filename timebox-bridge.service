@@ -1,0 +1,22 @@
+[Unit]
+Description=Mirror KDE notifications onto the TimeBox
+Wants=timebox-daemon.service
+After=timebox-daemon.service
+
+[Service]
+# TIMEBOX_ONLY_APPS lists the apps whose notifications reach the box:
+EnvironmentFile=%h/.config/timebox/env
+WorkingDirectory=%h/Documents/Source/timebox
+ExecStart=%h/Documents/Source/timebox/.venv/bin/python timebox_bridge.py
+Restart=on-failure
+RestartSec=10
+
+# Sandbox: the bridge only listens on the session bus and writes the FIFO.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t
+
+[Install]
+WantedBy=default.target

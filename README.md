@@ -117,6 +117,28 @@ All keys (each optional):
 | `visualizer`   | `true` starts the live spectrum, `false` stops it | —           |
 | `seconds`      | visualizer duration; omit for endless      | endless            |
 
+## KDE notifications on the box
+
+`timebox_bridge.py` mirrors KDE's notification bell: allow-listed apps bump an
+unread **count badge** on the panel (envelope + number). It listens on the
+session bus, so KDE's own notifications keep working untouched — and only the
+count is ever sent to the box, never the message text.
+
+```bash
+# Which apps reach the box (nothing is forwarded if unset).
+# The name is the app's D-Bus app_name — see it with:
+#   dbus-monitor --session "interface='org.freedesktop.Notifications'"
+echo 'TIMEBOX_ONLY_APPS=Thunderbird,Nextcloud' >> ~/.config/timebox/env
+
+systemctl --user enable --now $(pwd)/timebox-bridge.service
+journalctl --user -u timebox-bridge -f
+```
+
+The badge counts notifications that are still unread: dismissing one (or
+clicking it) decrements it, while one that merely times out on screen stays
+counted — same as the bell icon. While the visualizer runs, an arriving badge
+shows on top of the bars for a few seconds instead of persisting.
+
 ## One-shot CLI
 
 Same options as flags. If the daemon is running, the CLI hands the
@@ -155,6 +177,9 @@ make -j8; echo "{\"text\": \"make: exit $?\"}" > $XDG_RUNTIME_DIR/timebox.fifo
   authorization **only for the configured box address**; requests from
   any other device are rejected.
 - The daemon's journal log records notification keys, not content.
+- The KDE bridge eavesdrops the session bus, so it *sees* every notification
+  in-process — but it reads only the app name, forwards only a count, and logs
+  neither. No notification text ever reaches the box (or the air).
 
 ## Troubleshooting
 

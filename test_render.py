@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Runnable checks for the pure logic that would otherwise break silently:
-encoder patch, font packing, request validation, overlay stamping.
+encoder patch, font packing, request validation, overlay stamping, and the
+KDE bridge's unread bookkeeping.
 
 No framework — run it: .venv/bin/python test_render.py
 """
 
+from timebox_bridge import CLOSED_BY_CALL, CLOSED_DISMISSED, CLOSED_EXPIRED, UnreadTracker
 from timebox_daemon import ScrollOverlay, StaticOverlay, parse_params
 from timebox_notify import (
     _orig_encode_image,
@@ -55,5 +57,26 @@ assert 0 <= static.row0 < static.row1 <= 15
 frame2 = [(9, 9, 9)] * 256
 assert static.stamp(frame2) is True
 assert frame2[static.row0 * 16] == (0, 0, 0)
+
+# KDE bridge: only allow-listed apps count (case-insensitive); an id is only
+# unread once its Notify call has returned; replaces_id means "update", not a
+# new notification; dismissing clears it, merely expiring does not.
+t = UnreadTracker({"thunderbird"})
+
+t.on_notify(serial=10, app_name="Signal", replaces_id=0)  # not allow-listed
+assert t.on_reply(10, 900) is False and t.count == 0
+
+t.on_notify(serial=11, app_name="ThunderBird", replaces_id=0)  # case-insensitive
+assert t.on_reply(11, 1) is True and t.count == 1
+t.on_notify(serial=12, app_name="Thunderbird", replaces_id=0)
+assert t.on_reply(12, 2) is True and t.count == 2
+
+t.on_notify(serial=13, app_name="Thunderbird", replaces_id=2)  # update of id 2
+assert t.on_reply(13, 2) is False and t.count == 2
+
+assert t.on_closed(1, CLOSED_EXPIRED) is False and t.count == 2  # still unread
+assert t.on_closed(1, CLOSED_DISMISSED) is True and t.count == 1
+assert t.on_closed(2, CLOSED_BY_CALL) is True and t.count == 0
+assert t.on_closed(2, CLOSED_DISMISSED) is False  # already gone, no re-fire
 
 print("all checks pass")

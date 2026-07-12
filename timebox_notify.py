@@ -350,12 +350,18 @@ async def start_agent(address: str) -> MessageBus:
 
 
 def btctl(*args: str, timeout: int = 25) -> tuple[int, str]:
-    proc = subprocess.run(
-        ["bluetoothctl", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    """Run bluetoothctl. A hung helper is a failed call, never an exception —
+    bluetoothctl can block indefinitely on a wedged adapter, and that must not
+    take the daemon down."""
+    try:
+        proc = subprocess.run(
+            ["bluetoothctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 1, f"bluetoothctl {' '.join(args)} timed out after {timeout}s"
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -569,18 +575,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def try_daemon(args: argparse.Namespace) -> bool:
-    """If timebox_daemon.py is running, hand the notification to it."""
+def send_to_daemon(params: dict) -> bool:
+    """Write one notification request to a running daemon's FIFO.
+
+    Returns False (never raising) when no daemon is listening, so callers
+    can fall back to doing the work themselves. Shared by the CLI and the
+    KDE bridge.
+    """
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if not runtime_dir:
         return False  # never fall back to a world-writable /tmp FIFO
-    if args.address and args.address != DEFAULT_ADDRESS:
-        return False  # daemon serves $TIMEBOX_ADDRESS; a different box is ours
     try:
         fd = os.open(os.path.join(runtime_dir, "timebox.fifo"),
                      os.O_WRONLY | os.O_NONBLOCK)
     except OSError:
-        return False  # no FIFO or no reader — do it ourselves
+        return False  # no FIFO or no reader
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(params) + "\n")
+    return True
+
+
+def try_daemon(args: argparse.Namespace) -> bool:
+    """If timebox_daemon.py is running, hand the CLI notification to it."""
+    if args.address and args.address != DEFAULT_ADDRESS:
+        return False  # daemon serves $TIMEBOX_ADDRESS; a different box is ours
     params = {
         "count": args.count,
         "icon_color": list(args.icon_color),
@@ -593,9 +611,7 @@ def try_daemon(args: argparse.Namespace) -> bool:
         params["brightness"] = args.brightness
     if args.text:
         params["text"] = args.text
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(params) + "\n")
-    return True
+    return send_to_daemon(params)
 
 
 def main() -> int:
