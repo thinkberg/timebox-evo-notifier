@@ -16,6 +16,8 @@ goes over BLE, sound over classic A2DP, both held simultaneously.
 Why the architecture looks the way it does: [TBX-26-001](docs/TBX-26-001-notification-pipeline.txt) —
 all memos in the [register](docs/REGISTER.md).
 
+![The TimeBox Evo running the live audio visualizer during development](coding.jpg)
+
 ## Setup (one-time)
 
 ```bash
