@@ -1,0 +1,73 @@
+TECHNICAL MEMORANDUM                                         TBX-26-002
+
+SUBJECT:      Live audio visualizer on the TimeBox Evo panel -
+              capture cadence, DSP, and notification overlays
+DATE:         2026-07-12
+STATUS:       FINAL - feature operational, validated on hardware
+
+
+SUMMARY. The notification daemon can stream a live 16-band spectrum
+of the system audio to the 16x16 panel at 10 fps, endlessly, while
+remaining fully responsive to notifications - which render on top
+of the moving bars over an opaque band. The one non-obvious defect
+on the way: the capture stream's default adaptive latency delivers
+audio in ~2-second bursts, which made the display erratic; pinning
+the capture latency to 100 ms fixed it (measured max inter-frame
+gap 2031 ms -> 127 ms). Frame rate and streaming approach build on
+TBX-26-001 (2.8).
+
+1. BACKGROUND. With both radio links held permanently by the
+daemon (TBX-26-001 (4)), the panel can be driven at 10 fps
+indefinitely. A visualizer for "whatever the system is playing"
+was requested; it taps the default sink's monitor source, so it
+reflects PC audio without rerouting anything.
+
+2. FINDINGS.
+
+   2.1 Capture cadence dominates perceived smoothness. parec with
+   default settings buffers adaptively and delivers ~2 s bursts:
+   the display renders a burst of frames instantly, then stalls.
+   `--latency-msec=100` aligns delivery with the 10 fps frame
+   period. Measured over identical playback: max gap without the
+   flag 2031 ms (3 gaps > 300 ms in 3 s); with it 127 ms and none.
+   BLE was never the bottleneck - the same link streams a marquee
+   smoothly at the same rate.
+
+   2.2 DSP needs no dependencies. 16 log-spaced Goertzel bands
+   (50 Hz - 8 kHz) over 2400-sample frames (24 kHz mono s16) cost
+   ~40k multiply-adds per frame in pure Python - a few percent
+   CPU at 10 fps, computed in a worker thread so the event loop
+   stays free. Per-band slow-decay peak tracking (factor 0.995
+   per frame) auto-scales quiet and loud material to full bar
+   height.
+
+   2.3 Endless operation requires the visualizer to be a
+   cancellable background task, not a handled request: the FIFO
+   loop must keep reading. {"visualizer": true} starts (optional
+   `seconds` bounds it), {"visualizer": false} cancels; the
+   capture process is terminated on any exit path.
+
+   2.4 Notifications composite cleanly on top: each visualizer
+   frame stamps the current overlay before sending. Scrolling
+   text advances one column per visualizer frame over an opaque
+   band (glyph rows +/- 1 px); a static icon notification covers
+   its content's bounding rows for 4 s. Without the opaque band,
+   glyphs are illegible against moving bars. A new overlay
+   replaces a running one (last wins).
+
+3. ASSUMPTIONS. The visualizer follows the DEFAULT sink's monitor;
+audio routed directly to the box as A2DP speaker would not appear
+in it (untested; a device parameter would cover that case). CPU
+figures are from casual observation, not profiled.
+
+4. CONCLUSIONS. On a fixed-rate render loop, smoothness problems
+are more likely in the data supply cadence than in the output
+path - measure arrival timing before blaming the display link.
+Host-side compositing (bars + overlay in one frame) keeps a
+single writer on the panel and avoids any protocol-level layering
+that the box may not support.
+
+5. ACTION. Implemented in timebox_daemon.py (visualize,
+_apply_overlay); FIFO keys visualizer/seconds documented in
+README. Possible later: numpy FFT if bands/fps grow, a `device`
+parameter for non-default sinks, an unbounded-scroll stop command.
