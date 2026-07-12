@@ -9,8 +9,8 @@ STATUS:       FINAL
 SUMMARY. The code in this repository was written in one day by an
 AI agent, instructed to get a stubborn device working - not to
 write secure code. It got the device working. It also created five
-security issues along the way. None were caught while writing;
-all were caught by one review at the end and fixed within an hour.
+security issues along the way. None were caught while writing; all
+were caught by one review at the end and fixed within 19 minutes.
 The lesson is simple: an agent solves the problem in front of it.
 If security rules are not part of the task, they are not part of
 the code. Give the rules upfront; keep the closing review anyway.
@@ -64,11 +64,16 @@ who else can write this path? who reads this log? where do secrets
 live? A human reviewer asking exactly those questions found all
 five in one pass.
 
-4. WHAT CAUGHT THEM, AND THE COST. One explicitly requested review:
-five findings, one hour of fixes, same-day hardware verification.
-Detection was cheap. The real cost was exposure time - the pairing
-hole ran for hours and would have run indefinitely, because
-nothing in normal operation would ever have surfaced it.
+4. WHAT CAUGHT THEM, AND THE COST. One explicitly requested review.
+Measured by commit timestamps: the review was requested after the
+last pre-review commit at 20:54 and the complete remediation -
+review, plan, approval, fixes, tests, live re-verification against
+the device - was committed at 21:13. Nineteen minutes, five
+findings closed. Detection was that cheap. The real cost was
+exposure time: the pairing hole ran for about three hours (agent
+first registered ~18:00, fixed 21:13) and would have run
+indefinitely, because nothing in normal operation would ever have
+surfaced it.
 
 5. DECISION. For future AI-assisted work: state the security rules
 in the task, upfront, as bluntly as the functional goal. A short
