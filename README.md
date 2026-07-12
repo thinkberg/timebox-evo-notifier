@@ -139,6 +139,9 @@ clicking it) decrements it, while one that merely times out on screen stays
 counted — same as the bell icon. While the visualizer runs, an arriving badge
 shows on top of the bars for a few seconds instead of persisting.
 
+How it works and why it eavesdrops rather than replaces KDE's notification
+daemon: [TBX-26-003](docs/TBX-26-003-kde-notification-bridge.txt).
+
 ## One-shot CLI
 
 Same options as flags. If the daemon is running, the CLI hands the

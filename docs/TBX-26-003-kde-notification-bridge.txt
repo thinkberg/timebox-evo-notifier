@@ -1,0 +1,96 @@
+TECHNICAL MEMORANDUM                                         TBX-26-003
+
+SUBJECT:      Mirroring KDE's notification bell onto the panel -
+              eavesdropping the session bus, and what it exposed
+DATE:         2026-07-12
+STATUS:       FINAL - bridge operational, running as a user service
+
+
+SUMMARY. KDE's desktop notifications now raise an unread count badge
+on the panel. The bridge EAVESDROPS the session bus rather than
+replacing KDE's notification daemon, so the bell icon keeps working
+untouched; only allow-listed apps are forwarded, and only as a
+count - no notification text is ever transmitted, because the box's
+BLE link is unencrypted (TBX-26-001 (2.1), README security notes).
+Two non-obvious traps: a D-Bus monitor that answers a message gets
+killed by the bus, and the daemon was not serving its FIFO until
+its audio bring-up finished - a ~90 s window in which every badge
+was silently dropped.
+
+1. BACKGROUND. Requirement: what lands under the KDE bell should
+also land on the box. Content policy was a deliberate choice
+(operator decision, 2026-07-12): envelope + count only, allow-list
+only. That choice is what makes the feature safe on an unencrypted
+display - a bare number leaks nothing to a sniffer in radio range,
+and non-listed apps are never even counted.
+
+2. FINDINGS.
+
+   2.1 Eavesdrop, don't replace. `org.freedesktop.Notifications` is
+   owned by plasmashell. Taking that name would mean reimplementing
+   KDE's entire notification UI. Becoming a bus MONITOR
+   (org.freedesktop.DBus.Monitoring.BecomeMonitor) delivers every
+   Notify call as a copy, changing nothing about normal delivery.
+   Match rules used: the Notify method calls, plus everything sent
+   BY the service (its method returns and NotificationClosed
+   signals). Well-known sender names in match rules are resolved to
+   the current owner by the bus, so a plasmashell restart is
+   transparent.
+
+   2.2 A monitor may not send - and dbus_fast does, by default.
+   The first run died with EOFError seconds after the first
+   notification: dbus_fast auto-replies "unknown method" to method
+   calls it sees, a monitor sees calls addressed to OTHER peers,
+   and the bus kills any monitor that transmits. Fix: the message
+   handler returns True for every message, claiming it, so the
+   library never answers. One line, and the whole approach lives
+   or dies by it.
+
+   2.3 Unread bookkeeping needs the method RETURN. A Notify call
+   does not carry the notification id - the id is in the reply. So
+   the bridge remembers the call's serial and picks the id out of
+   the matching method_return. `replaces_id` pointing at a known id
+   means an UPDATE (progress bars, sync status), not a new
+   notification: no double count.
+
+   2.4 Clearing semantics mirror the bell. NotificationClosed
+   reason 2 (dismissed) and 3 (closed by the app, typically a
+   click) clear an id; reason 1 (expired on screen) does NOT -
+   KDE keeps timed-out notifications in its history as unread, and
+   the badge should agree.
+
+   2.5 Pushes are lost across daemon restarts. The bridge writes
+   the count into the daemon's FIFO; while the daemon reconnects
+   BLE (~15 s) nothing is listening. Rather than queue retries, a
+   5 s reconcile loop simply re-pushes whenever the panel's known
+   state differs from the true count - self-healing, and it also
+   covers a daemon that was not running at all when the
+   notification arrived.
+
+   2.6 The feature exposed two defects in existing code:
+   * `btctl()` let a hung bluetoothctl raise TimeoutExpired out of
+     connect_le, killing the daemon - systemd then crash-looped it.
+     A hung helper is now a failed call. (Root cause of the hang:
+     two bluetoothctl processes stuck since earlier experiments,
+     jamming every later invocation.)
+   * The daemon opened its FIFO only AFTER the startup audio dial,
+     which grinds for ~90 s against a box that is not answering
+     pages. Every badge in that window was dropped. The FIFO now
+     comes up with the LE link (measured: 0.4 ms after "LE control
+     connected"), and audio latches in the background.
+
+3. ASSUMPTIONS. app_name is taken as the app's identity; a
+malicious local process could claim any app_name it likes, but it
+could equally write the FIFO directly - same trust boundary, same
+user. Monitoring requires no privilege beyond the user's own
+session bus.
+
+4. CONCLUSIONS. Observing a desktop service beats impersonating
+one: the bridge adds a consumer without owning a name, so nothing
+degrades if it dies. And a feature that only ever transmits an
+integer is the cheapest possible answer to an unencrypted display -
+the privacy question disappears instead of being managed.
+
+5. ACTION. timebox_bridge.py + timebox-bridge.service (enabled).
+Config: TIMEBOX_ONLY_APPS in ~/.config/timebox/env. Unread logic
+covered by asserts in test_render.py.
