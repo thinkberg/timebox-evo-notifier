@@ -4,7 +4,8 @@ Notifications on a Divoom TimeBox Evo from Linux: icons or scrolling
 text on the 16x16 panel, with a sound from the box speaker. Control
 goes over BLE, sound over classic A2DP, both held simultaneously.
 
-Why the architecture looks the way it does: [TBX-26-001](docs/TBX-26-001-notification-pipeline.txt).
+Why the architecture looks the way it does: [TBX-26-001](docs/TBX-26-001-notification-pipeline.txt) —
+all memos in the [register](docs/REGISTER.md).
 
 ## Setup (one-time)
 
