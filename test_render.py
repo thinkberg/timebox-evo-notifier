@@ -99,8 +99,27 @@ for _ in range(9):
     assert cur in (prev, [(j + 1) % 60 for j in prev])
 assert cur != first
 _tunnel["hist"].clear()
+_tunnel["offset"] = 0  # 60 bands: 1:1 pixel:band on the outer ring
+h60 = [0] * 60
+h60[7] = 16
+frame = _tunnel_frame(h60)
+assert sum(frame[i] != (0, 0, 0) for i in _RINGS[0]) == 1
+assert frame[_RINGS[0][7]] != (0, 0, 0)
+_tunnel["hist"].clear()
+frame = _tunnel_frame([16] * 60)
+assert all(frame[i] != (0, 0, 0) for i in _RINGS[0])
+_tunnel["hist"].clear()
 assert parse_params({"mode": "tunnel"})["mode"] == "tunnel"
 assert "mode" not in parse_params({"mode": "spiral"})
+assert parse_params({"spin": 999})["spin"] == 5.0
+assert parse_params({"spin": -2})["spin"] == -2.0
+assert "spin" not in parse_params({"spin": "fast"})
+assert parse_params({"fade": 2})["fade"] == 1.0
+assert parse_params({"fade": 0.7})["fade"] == 0.7
+assert parse_params({"bands": 999})["bands"] == 60
+assert parse_params({"bands": 1})["bands"] == 2
+assert "fade" not in parse_params({"fade": "x"})
+assert "bands" not in parse_params({"bands": "x"})
 
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a

@@ -104,6 +104,8 @@ echo '{"count": 7, "icon_color": [40,200,255], "sound": "/usr/share/sounds/ocean
 echo '{"visualizer": true}' > $FIFO            # endless
 echo '{"visualizer": true, "seconds": 30}' > $FIFO  # fixed duration
 echo '{"visualizer": true, "mode": "tunnel"}' > $FIFO  # psychedelic tunnel
+echo '{"visualizer": true, "mode": "tunnel", "spin": 2}' > $FIFO  # faster rotation
+echo '{"visualizer": true, "fade": 0.7, "bands": 16}' > $FIFO  # tune the look live
 echo '{"visualizer": false}' > $FIFO           # stop
 
 # Notifications sent while the visualizer runs are drawn on top of the
@@ -132,7 +134,10 @@ All keys (each optional):
 | `silent`       | `true` = no sound                          | `false`            |
 | `visualizer`   | `true` starts the live spectrum, `false` stops it | —           |
 | `seconds`      | visualizer duration; omit for endless      | endless            |
-| `mode`         | visualizer look: `"bars"`, or `"tunnel"` — spectrum rings flowing inward, fading with age; switchable while running | `"bars"` |
+| `mode`         | visualizer look: `"bars"` (16 bands), or `"tunnel"` — spectrum rings flowing inward, fading with age, one band per border pixel (60); switchable while running | `"bars"` |
+| `spin`         | tunnel rotation in border px per frame, −5…5; negative reverses, 0 stops; switchable while running | `0.5` |
+| `fade`         | tunnel per-ring brightness decay toward the center, 0…1; switchable while running | `0.92` |
+| `bands`        | tunnel analyzer width, 2…60; switchable while running | `60` |
 
 ## KDE notifications on the box
 

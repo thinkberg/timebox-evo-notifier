@@ -1,0 +1,76 @@
+TECHNICAL MEMORANDUM                                         TBX-26-005
+
+SUBJECT:      Tunnel visualizer - concentric spectrum rings, per-pixel
+              analysis, and live-tunable rendering knobs
+DATE:         2026-07-13
+STATUS:       FINAL - feature operational, validated on hardware
+
+
+SUMMARY. The visualizer gained a second mode: a psychedelic tunnel.
+The current spectrum wraps the panel border; each frame the picture
+sinks one ring toward the center, so the tunnel's depth is the
+signal's history, with colors bleeding out as they age. The 16x16
+panel decomposes into exactly 8 concentric rings (perimeters 60, 52,
+44, 36, 28, 20, 12, 4 - together 256 px), which fixes the history
+depth at 8 frames. Analysis was widened from 16 to 60 bands - one
+band per border pixel - after a benchmark showed the pure-Python
+Goertzel handles it in 6.9 ms against the 100 ms frame budget. Mode
+and all rendering knobs (spin, fade, bands) are FIFO parameters,
+switchable while the visualizer runs. Builds on TBX-26-002; the
+capture gating and link recovery are unchanged underneath.
+
+1. DESIGN.
+
+   1.1 Geometry. Ring r spans (r, r) to (15-r, 15-r), pixels ordered
+   clockwise from the ring's top-left corner. The newest outer-ring
+   pattern is pushed onto a deque(maxlen=8); entry r is the pattern
+   from r frames ago, resampled from 60 px down to the ring's
+   perimeter (src[j * 60 // len(ring)]), which preserves angular
+   position as rings shrink.
+
+   1.2 Color. Hue = band position (full rainbow around the ring),
+   brightness = sqrt(height/16) - the sqrt lifts quiet bands into
+   visibility while silence stays black. Aging rings dim by
+   fade^age (default 0.92). The pattern revolves `spin` border
+   pixels per frame (default 0.5, fractional offsets accumulate);
+   each ring keeps the rotation it was born with, so the history
+   visibly twists against the live edge.
+
+   1.3 Analysis width. 60 bands, not the 64 first proposed: 60 is
+   one band per border pixel, nothing skipped or doubled. The
+   frequency table (log-spaced 50 Hz - 8 kHz) is generated per band
+   count behind an lru_cache; bars mode keeps its 16. Below ~150 Hz
+   adjacent bands sit closer than the 10 Hz resolution of the
+   2400-sample window, so the low end smears - cosmetic. Measured
+   cost: 1.9 ms/frame at 16 bands, 6.9 ms at 60, budget 100 ms -
+   the documented numpy upgrade path stays unnecessary.
+
+   1.4 Runtime knobs. mode ("bars"/"tunnel"), spin (-5..5 px/frame,
+   negative reverses, 0 stops), fade (0..1), bands (2..60) are FIFO
+   keys, clamped like every other request field, applied live to a
+   running visualizer; the journal logs exactly what changed.
+   Overlays (badges, marquees) stamp onto tunnel frames unchanged,
+   and onto blank frames while capture is paused.
+
+2. TRAPS.
+
+   2.1 Mode switch vs. in-flight frame. The render mode was read
+   twice per frame with an await between the reads; a live switch in
+   that window could hand 60 heights to the 16-column bars renderer
+   (index overflow, dead task). One read per frame, used for both
+   the frequency table and the renderer, closes it.
+
+   2.2 A check that re-rendered per pixel. The rotation test called
+   _tunnel_frame() inside a list comprehension's condition - once
+   per border pixel, advancing the rotation 60x per "frame" - and
+   passed by coincidence at spin=1 until a knob change exposed it.
+   Render once, then inspect; and pin mechanisms, not knob values
+   (the check now accepts any 0 < spin <= 1).
+
+3. DISPOSITION. Validated per TBX-26-004 practice: geometry and
+rendering invariants as runnable checks (rings partition the panel,
+1:1 band mapping, single-pixel rotation steps, monotone fade), live
+knob changes driven over the FIFO and confirmed in the journal, mode
+switches exercised in both directions on hardware, capture
+pause/resume regression-checked. Knob defaults (fade 0.92, spin 0.5)
+were tuned by the operator against the running panel.

@@ -16,7 +16,9 @@ sound <path>, silent true/false. visualizer true streams a 16-band
 spectrum of the system audio (endless — capturing only while audio
 plays — or `seconds` if given); visualizer false stops it. mode picks
 the look: "bars" (default) or "tunnel" — concentric spectrum rings
-flowing inward, colors fading with age; switchable while running.
+flowing inward, colors fading with age. Tunnel knobs: spin (rotation
+in border px/frame; negative reverses, 0 stops), fade (per-ring decay,
+0-1), bands (analyzer width, 2-60). All switchable while running.
 Notifications arriving while it runs are
 rendered on top of the frame over an opaque background band.
 
@@ -34,6 +36,7 @@ import stat
 import subprocess
 from collections import deque
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from bleak.exc import BleakError
 
@@ -141,6 +144,21 @@ def parse_params(raw: dict) -> dict:
             pass
     if raw.get("mode") in ("bars", "tunnel"):
         p["mode"] = raw["mode"]
+    if "spin" in raw:
+        try:  # border px per frame; negative reverses, 0 stops the rotation
+            p["spin"] = min(5.0, max(-5.0, float(raw["spin"])))
+        except Exception:
+            pass
+    if "fade" in raw:
+        try:  # per-ring brightness decay toward the center
+            p["fade"] = min(1.0, max(0.0, float(raw["fade"])))
+        except Exception:
+            pass
+    if "bands" in raw:
+        try:  # tunnel analyzer width; the outer ring has 60 px
+            p["bands"] = min(60, max(2, int(raw["bands"])))
+        except Exception:
+            pass
     return p
 
 
@@ -152,14 +170,25 @@ VIS_BANDS = 16
 SILENCE_SECS = 10  # digital silence before capture (and KDE's mic icon) pauses
 TUNNEL_FADE = 0.92  # per-ring brightness decay toward the center
 TUNNEL_SPIN = 0.5  # signal rotation, border px per frame (full turn = 12 s at 10 fps)
-# ponytail: pure-python Goertzel, ~40k mults/frame; numpy FFT if CPU bothers.
-_VIS_FREQS = [50.0 * (8000.0 / 50.0) ** (i / (VIS_BANDS - 1)) for i in range(VIS_BANDS)]
+# ponytail: pure-python Goertzel — 7 ms/frame even at 60 bands (measured);
+# numpy FFT if CPU ever bothers.
+@lru_cache(maxsize=8)
+def _vis_freqs(n: int) -> list[float]:
+    """n log-spaced analysis frequencies, 50 Hz – 8 kHz. Below ~150 Hz at
+    n=60 adjacent bands sit closer than the 10 Hz resolution of the
+    2400-sample window — the low end smears a bit."""
+    return [50.0 * (8000.0 / 50.0) ** (i / (n - 1)) for i in range(n)]
 
 
-def _band_heights(samples: array.array, peak: float) -> tuple[list[int], float]:
+_VIS_FREQS = _vis_freqs(VIS_BANDS)
+
+
+def _band_heights(
+    samples: array.array, peak: float, freqs: list[float]
+) -> tuple[list[int], float]:
     n = len(samples)
     heights = []
-    for f in _VIS_FREQS:
+    for f in freqs:
         c = 2.0 * math.cos(2.0 * math.pi * f / VIS_RATE)
         s1 = s2 = 0.0
         for x in samples:
@@ -209,14 +238,15 @@ def _tunnel_frame(heights: list[int]) -> list[RGB]:
     with age. Hue = band, brightness = band height; the whole pattern
     revolves TUNNEL_SPIN border pixels per frame, so the history twists."""
     outer = len(_RINGS[0])
-    _tunnel["offset"] = (_tunnel["offset"] + TUNNEL_SPIN) % outer
+    nb = len(heights)  # 1:1 pixel:band at 60; any count resamples cleanly
+    _tunnel["offset"] = (_tunnel["offset"] + _vis["spin"]) % outer
     offset = int(_tunnel["offset"])
     pattern = []
     for i in range(outer):
-        band = ((i - offset) % outer) * VIS_BANDS // outer
+        band = ((i - offset) % outer) * nb // outer
         # sqrt lifts quiet bands into visibility; 0 stays black
         r, g, b = colorsys.hsv_to_rgb(
-            band / VIS_BANDS, 1.0, math.sqrt(heights[band] / 16))
+            band / nb, 1.0, math.sqrt(heights[band] / 16))
         pattern.append((int(255 * r), int(255 * g), int(255 * b)))
     _tunnel["hist"].appendleft(pattern)
     pixels: list[RGB] = [(0, 0, 0)] * 256
@@ -224,7 +254,7 @@ def _tunnel_frame(heights: list[int]) -> list[RGB]:
         if age >= len(_tunnel["hist"]):
             break
         src = _tunnel["hist"][age]
-        fade = TUNNEL_FADE ** age
+        fade = _vis["fade"] ** age
         for j, idx in enumerate(ring):
             r, g, b = src[j * outer // len(ring)]
             pixels[idx] = (int(r * fade), int(g * fade), int(b * fade))
@@ -292,8 +322,9 @@ class StaticOverlay:
 
 
 # Visualizer state: the running task, the overlay stamped on each frame,
-# and the render mode ("bars" or "tunnel") — switchable while running.
-_vis: dict = {"task": None, "overlay": None, "mode": "bars"}
+# and the render knobs — all switchable while running.
+_vis: dict = {"task": None, "overlay": None, "mode": "bars",
+              "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE, "bands": len(_RINGS[0])}
 
 
 def _sink_running() -> bool:
@@ -423,8 +454,14 @@ async def visualize(params: dict) -> None:
                             # way. Track corked state via pactl if it bites.
                             quiet = 0
                             break
-                    heights, peak = await asyncio.to_thread(_band_heights, samples, peak)
-                    frame = (_tunnel_frame(heights) if _vis["mode"] == "tunnel"
+                    # One read per frame: a live mode switch during the
+                    # to_thread await must not mismatch heights and renderer.
+                    mode = _vis["mode"]
+                    freqs = (_vis_freqs(_vis["bands"]) if mode == "tunnel"
+                             else _VIS_FREQS)
+                    heights, peak = await asyncio.to_thread(
+                        _band_heights, samples, peak, freqs)
+                    frame = (_tunnel_frame(heights) if mode == "tunnel"
                              else _bar_frame(heights))
                     async with _panel_lock:
                         await client.static_image(_apply_overlay(frame))
@@ -525,15 +562,20 @@ async def handle(client, params: dict) -> None:
     if "visualizer" in params:
         if params["visualizer"] and not vis_running:
             _vis["mode"] = params.get("mode", "bars")
+            _vis["spin"] = params.get("spin", TUNNEL_SPIN)
+            _vis["fade"] = params.get("fade", TUNNEL_FADE)
+            _vis["bands"] = params.get("bands", len(_RINGS[0]))
             _vis["task"] = _spawn(visualize(params), "visualizer")
         elif not params["visualizer"] and vis_running:
             _vis["task"].cancel()
         elif params["visualizer"]:
-            if params.get("mode", _vis["mode"]) != _vis["mode"]:
-                _vis["mode"] = params["mode"]
-                print(f"visualizer mode: {_vis['mode']}", flush=True)
-            else:
-                print("visualizer already running", flush=True)
+            changed = []
+            for key in ("mode", "spin", "fade", "bands"):
+                if params.get(key, _vis[key]) != _vis[key]:
+                    _vis[key] = params[key]
+                    changed.append(f"{key}: {params[key]}")
+            print(f"visualizer {', '.join(changed)}" if changed
+                  else "visualizer already running", flush=True)
         return
 
     if not params["silent"]:
