@@ -13,8 +13,8 @@ Accepted JSON keys (all optional): text "..." (scrolls instead of the
 envelope icon; fps sets scroll speed), count, icon_color [r,g,b],
 number_color [r,g,b], background [r,g,b], brightness 0-100,
 sound <path>, silent true/false. visualizer true streams a 16-band
-spectrum of the system audio (endless — waiting out audio dropouts —
-or `seconds` if given); visualizer false stops it.
+spectrum of the system audio (endless — capturing only while audio
+plays — or `seconds` if given); visualizer false stops it.
 Notifications arriving while it runs are
 rendered on top of the bars over an opaque background band.
 
@@ -111,6 +111,7 @@ def parse_params(raw: dict) -> dict:
 VIS_RATE = 24000
 VIS_FPS = 10
 VIS_BANDS = 16
+SILENCE_SECS = 10  # digital silence before capture (and KDE's mic icon) pauses
 # ponytail: pure-python Goertzel, ~40k mults/frame; numpy FFT if CPU bothers.
 _VIS_FREQS = [50.0 * (8000.0 / 50.0) ** (i / (VIS_BANDS - 1)) for i in range(VIS_BANDS)]
 
@@ -207,6 +208,38 @@ class StaticOverlay:
 _vis: dict = {"task": None, "overlay": None}
 
 
+def _sink_running() -> bool:
+    """True when the default sink has an uncorked stream playing into it.
+
+    Checked while our own parec is dead (or about to be), so the monitor
+    capture never holds the sink RUNNING against us.
+    """
+    try:
+        sink = subprocess.run(
+            ["pactl", "get-default-sink"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        short = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    for line in short.splitlines():
+        cols = line.split("\t")
+        if len(cols) >= 2 and cols[1] == sink:
+            return line.rstrip().endswith("RUNNING")
+    return False
+
+
+async def _blank_panel(client) -> None:
+    try:
+        async with _panel_lock:
+            await client.static_image(_bar_frame([0] * VIS_BANDS))
+    except Exception:
+        pass  # a dead panel must not stop the audio wait
+
+
 def _apply_overlay(frame: list[RGB]) -> list[RGB]:
     overlay = _vis["overlay"]
     if overlay is not None and not overlay.stamp(frame):
@@ -218,22 +251,44 @@ async def visualize(client, params: dict) -> None:
     """Stream a 16-band spectrum of the system audio (default sink monitor).
 
     Endless unless `seconds` is given; stopped via {"visualizer": false}.
-    In endless mode a lost capture (sink switched, PipeWire restarted,
-    suspend) clears the bars and retries until audio comes back.
-    Holds the client it started with: if the LE link is re-established the
-    task ends with a logged error — restart the visualizer afterwards.
+    Endless mode captures only while the default sink is actually playing:
+    after SILENCE_SECS of silence, or a lost capture (sink switched,
+    PipeWire restarted, suspend), parec is stopped — which also clears
+    KDE's microphone-in-use indicator — and the bars resume when audio
+    comes back. Holds the client it started with: if the LE link is
+    re-established the task ends with a logged error — restart the
+    visualizer afterwards.
     """
     seconds = params.get("seconds")
     total = int(seconds * VIS_FPS) if seconds else None
     bytes_per_frame = (VIS_RATE // VIS_FPS) * 2
     peak = 1.0
     sent = 0
-    waiting = False  # capture lost; log the resume once, not per retry
+    quiet = 0
+    waiting = False  # capture paused/lost; log the resume once, not per retry
     print(f"visualizer started ({seconds}s)" if seconds
           else 'visualizer started (endless — stop with {"visualizer": false})',
           flush=True)
     try:
         while total is None or sent < total:
+            # Endless mode: no capture stream while nothing plays.
+            if total is None and not _sink_running():
+                if not waiting:
+                    waiting = True
+                    print("visualizer: audio idle — capture paused", flush=True)
+                    await _blank_panel(client)
+                # Overlays are normally stamped onto capture frames; keep
+                # notifications visible while paused.
+                if _vis["overlay"] is not None:
+                    async with _panel_lock:
+                        await client.static_image(
+                            _apply_overlay(_bar_frame([0] * VIS_BANDS)))
+                    await asyncio.sleep(1 / VIS_FPS)
+                    if _vis["overlay"] is None:  # that was its last frame
+                        await _blank_panel(client)
+                else:
+                    await asyncio.sleep(2)
+                continue
             proc = None
             try:
                 # Re-queried per attempt: the default sink may have changed.
@@ -242,7 +297,8 @@ async def visualize(client, params: dict) -> None:
                     capture_output=True, text=True, check=True,
                 ).stdout.strip()
                 proc = await asyncio.create_subprocess_exec(
-                    "parec", f"--device={sink}.monitor", "--format=s16le",
+                    "parec", "--client-name=TimeBox visualizer",
+                    f"--device={sink}.monitor", "--format=s16le",
                     f"--rate={VIS_RATE}", "--channels=1", "--raw",
                     "--latency-msec=100",  # default adaptive latency delivers ~2s bursts
                     stdout=asyncio.subprocess.PIPE,
@@ -253,6 +309,15 @@ async def visualize(client, params: dict) -> None:
                         waiting = False
                         print("visualizer: audio capture resumed", flush=True)
                     samples = array.array("h", data)
+                    if total is None:
+                        quiet = 0 if any(samples) else quiet + 1
+                        if quiet >= SILENCE_SECS * VIS_FPS:
+                            # ponytail: an uncorked stream of pure digital
+                            # zeros keeps the sink RUNNING, so this respawns
+                            # parec every SILENCE_SECS; panel is black either
+                            # way. Track corked state via pactl if it bites.
+                            quiet = 0
+                            break
                     heights, peak = await asyncio.to_thread(_band_heights, samples, peak)
                     async with _panel_lock:
                         await client.static_image(_apply_overlay(_bar_frame(heights)))
@@ -268,11 +333,7 @@ async def visualize(client, params: dict) -> None:
                     waiting = True
                     print("visualizer: audio capture ended — waiting for audio",
                           flush=True)
-                    try:
-                        async with _panel_lock:
-                            await client.static_image(_bar_frame([0] * VIS_BANDS))
-                    except Exception:
-                        pass  # a dead panel must not stop the audio retry
+                    await _blank_panel(client)
                 await asyncio.sleep(2)
             finally:
                 if proc is not None:

@@ -109,6 +109,12 @@ echo '{"visualizer": false}' > $FIFO           # stop
 # bars, over an opaque band, so they stay legible.
 ```
 
+The visualizer records the default sink's *monitor* (what the speakers
+play — never the microphone), which KDE reports with the mic-in-use tray
+icon, labeled "TimeBox visualizer". In endless mode the capture — and
+with it the icon — pauses after 10 s of silence and resumes when audio
+plays again.
+
 All keys (each optional):
 
 | Key            | Meaning                                    | Default            |
