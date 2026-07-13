@@ -13,8 +13,9 @@ Accepted JSON keys (all optional): text "..." (scrolls instead of the
 envelope icon; fps sets scroll speed), count, icon_color [r,g,b],
 number_color [r,g,b], background [r,g,b], brightness 0-100,
 sound <path>, silent true/false. visualizer true streams a 16-band
-spectrum of the system audio (endless, or `seconds` if given);
-visualizer false stops it. Notifications arriving while it runs are
+spectrum of the system audio (endless — waiting out audio dropouts —
+or `seconds` if given); visualizer false stops it.
+Notifications arriving while it runs are
 rendered on top of the bars over an opaque background band.
 
 Bad values are clamped or replaced with defaults — a malformed request
@@ -217,40 +218,71 @@ async def visualize(client, params: dict) -> None:
     """Stream a 16-band spectrum of the system audio (default sink monitor).
 
     Endless unless `seconds` is given; stopped via {"visualizer": false}.
+    In endless mode a lost capture (sink switched, PipeWire restarted,
+    suspend) clears the bars and retries until audio comes back.
     Holds the client it started with: if the LE link is re-established the
     task ends with a logged error — restart the visualizer afterwards.
     """
     seconds = params.get("seconds")
     total = int(seconds * VIS_FPS) if seconds else None
-    sink = subprocess.run(
-        ["pactl", "get-default-sink"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    proc = await asyncio.create_subprocess_exec(
-        "parec", f"--device={sink}.monitor", "--format=s16le",
-        f"--rate={VIS_RATE}", "--channels=1", "--raw",
-        "--latency-msec=100",  # default adaptive latency delivers ~2s bursts
-        stdout=asyncio.subprocess.PIPE,
-    )
     bytes_per_frame = (VIS_RATE // VIS_FPS) * 2
     peak = 1.0
     sent = 0
+    waiting = False  # capture lost; log the resume once, not per retry
     print(f"visualizer started ({seconds}s)" if seconds
           else 'visualizer started (endless — stop with {"visualizer": false})',
           flush=True)
     try:
         while total is None or sent < total:
-            data = await proc.stdout.readexactly(bytes_per_frame)
-            samples = array.array("h", data)
-            heights, peak = await asyncio.to_thread(_band_heights, samples, peak)
-            async with _panel_lock:
-                await client.static_image(_apply_overlay(_bar_frame(heights)))
-            sent += 1
-    except asyncio.IncompleteReadError:
-        print("visualizer: audio capture ended", flush=True)
+            proc = None
+            try:
+                # Re-queried per attempt: the default sink may have changed.
+                sink = subprocess.run(
+                    ["pactl", "get-default-sink"],
+                    capture_output=True, text=True, check=True,
+                ).stdout.strip()
+                proc = await asyncio.create_subprocess_exec(
+                    "parec", f"--device={sink}.monitor", "--format=s16le",
+                    f"--rate={VIS_RATE}", "--channels=1", "--raw",
+                    "--latency-msec=100",  # default adaptive latency delivers ~2s bursts
+                    stdout=asyncio.subprocess.PIPE,
+                )
+                while total is None or sent < total:
+                    data = await proc.stdout.readexactly(bytes_per_frame)
+                    if waiting:
+                        waiting = False
+                        print("visualizer: audio capture resumed", flush=True)
+                    samples = array.array("h", data)
+                    heights, peak = await asyncio.to_thread(_band_heights, samples, peak)
+                    async with _panel_lock:
+                        await client.static_image(_apply_overlay(_bar_frame(heights)))
+                    sent += 1
+            except (asyncio.IncompleteReadError,
+                    subprocess.CalledProcessError, OSError) as exc:
+                if total is not None:
+                    if isinstance(exc, asyncio.IncompleteReadError):
+                        print("visualizer: audio capture ended", flush=True)
+                        break
+                    raise
+                if not waiting:
+                    waiting = True
+                    print("visualizer: audio capture ended — waiting for audio",
+                          flush=True)
+                    try:
+                        async with _panel_lock:
+                            await client.static_image(_bar_frame([0] * VIS_BANDS))
+                    except Exception:
+                        pass  # a dead panel must not stop the audio retry
+                await asyncio.sleep(2)
+            finally:
+                if proc is not None:
+                    try:
+                        proc.terminate()
+                    except ProcessLookupError:
+                        pass  # parec already gone — that's why we're here
+                    await proc.wait()
     finally:
         _vis["overlay"] = None
-        proc.terminate()
-        await proc.wait()
         print("visualizer stopped", flush=True)
 
 
