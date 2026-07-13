@@ -109,6 +109,23 @@ echo '{"visualizer": true, "fade": 0.7, "bands": 16}' > $FIFO  # tune the look l
 echo '{"visualizer": true, "stereo": true}' > $FIFO  # split L/R channels
 echo '{"visualizer": false}' > $FIFO           # stop
 
+# Some favorite recipes — every knob switches live, no restart needed:
+
+# Calm stereo tunnel: no rotation, soft glow, chunky bands
+echo '{"visualizer": true, "mode": "tunnel", "stereo": true, "fade": 0.8, "bands": 30, "spin": 0}' > $FIFO
+
+# Slow-motion deep tunnel: long history glow, gentle drift
+echo '{"visualizer": true, "mode": "tunnel", "fade": 0.97, "spin": 0.2}' > $FIFO
+
+# Strobe-y and chunky: coarse bands, hard fade, fast reverse spin
+echo '{"visualizer": true, "mode": "tunnel", "bands": 8, "fade": 0.5, "spin": -3}' > $FIFO
+
+# Stereo bars: left channel rises from the bottom, right falls from the top
+echo '{"visualizer": true, "mode": "bars", "stereo": true}' > $FIFO
+
+# Nudge a single knob while it runs — everything else stays as it is
+echo '{"visualizer": true, "spin": 1}' > $FIFO
+
 # Notifications sent while the visualizer runs are drawn on top of the
 # bars, over an opaque band, so they stay legible.
 ```
