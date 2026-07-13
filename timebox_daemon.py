@@ -61,6 +61,38 @@ def _le_alive(client) -> bool:
     return client._ble is not None and client._ble.is_connected
 
 
+# The LE client is shared between the FIFO loop and the visualizer; both
+# get it via ensure_le() so only ever one of them dials the link.
+_le: dict = {"client": None}
+_le_lock = asyncio.Lock()
+
+
+async def ensure_le():
+    """The current LE client, reconnecting first if the link is down."""
+    async with _le_lock:
+        client = _le["client"]
+        if client is None or not _le_alive(client):
+            if client is not None:
+                print("LE link lost — reconnecting", flush=True)
+            _le["client"] = await connect_le(DEFAULT_ADDRESS)
+        return _le["client"]
+
+
+async def drop_le() -> None:
+    """Tear the LE link down so the next ensure_le() redials.
+
+    Needed because a box-side reconnect can leave the client "connected"
+    but with services unresolved — every write fails until we let go.
+    """
+    client = _le["client"]
+    if client is None:
+        return
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+
+
 # --- FIFO request parsing ------------------------------------------------------
 
 
@@ -233,6 +265,8 @@ def _sink_running() -> bool:
 
 
 async def _blank_panel(client) -> None:
+    if client is None:
+        return
     try:
         async with _panel_lock:
             await client.static_image(_bar_frame([0] * VIS_BANDS))
@@ -247,7 +281,7 @@ def _apply_overlay(frame: list[RGB]) -> list[RGB]:
     return frame
 
 
-async def visualize(client, params: dict) -> None:
+async def visualize(params: dict) -> None:
     """Stream a 16-band spectrum of the system audio (default sink monitor).
 
     Endless unless `seconds` is given; stopped via {"visualizer": false}.
@@ -255,9 +289,9 @@ async def visualize(client, params: dict) -> None:
     after SILENCE_SECS of silence, or a lost capture (sink switched,
     PipeWire restarted, suspend), parec is stopped — which also clears
     KDE's microphone-in-use indicator — and the bars resume when audio
-    comes back. Holds the client it started with: if the LE link is
-    re-established the task ends with a logged error — restart the
-    visualizer afterwards.
+    comes back. Endless mode also survives the LE link dropping (box
+    power management): it redials via ensure_le() and carries on. A
+    timed run still dies on BLE errors — it would overrun its window.
     """
     seconds = params.get("seconds")
     total = int(seconds * VIS_FPS) if seconds else None
@@ -273,6 +307,7 @@ async def visualize(client, params: dict) -> None:
         while total is None or sent < total:
             # Endless mode: no capture stream while nothing plays.
             if total is None and not _sink_running():
+                client = _le["client"]  # may be dead; all writes are guarded
                 if not waiting:
                     waiting = True
                     print("visualizer: audio idle — capture paused", flush=True)
@@ -280,14 +315,26 @@ async def visualize(client, params: dict) -> None:
                 # Overlays are normally stamped onto capture frames; keep
                 # notifications visible while paused.
                 if _vis["overlay"] is not None:
-                    async with _panel_lock:
-                        await client.static_image(
-                            _apply_overlay(_bar_frame([0] * VIS_BANDS)))
+                    try:
+                        async with _panel_lock:
+                            await client.static_image(
+                                _apply_overlay(_bar_frame([0] * VIS_BANDS)))
+                    except Exception:
+                        pass  # panel trouble must not stop the audio wait
                     await asyncio.sleep(1 / VIS_FPS)
                     if _vis["overlay"] is None:  # that was its last frame
                         await _blank_panel(client)
                 else:
                     await asyncio.sleep(2)
+                continue
+            try:
+                client = await ensure_le()
+            except Exception as exc:
+                if total is not None:
+                    raise
+                print(f"visualizer: LE reconnect failed ({exc}) — retrying",
+                      flush=True)
+                await asyncio.sleep(15)
                 continue
             proc = None
             try:
@@ -322,6 +369,13 @@ async def visualize(client, params: dict) -> None:
                     async with _panel_lock:
                         await client.static_image(_apply_overlay(_bar_frame(heights)))
                     sent += 1
+            except BleakError as exc:
+                if total is not None:
+                    raise
+                print(f"visualizer: panel write failed ({exc}) — reconnecting",
+                      flush=True)
+                await drop_le()
+                await asyncio.sleep(2)
             except (asyncio.IncompleteReadError,
                     subprocess.CalledProcessError, OSError) as exc:
                 if total is not None:
@@ -409,7 +463,7 @@ async def handle(client, params: dict) -> None:
 
     if "visualizer" in params:
         if params["visualizer"] and not vis_running:
-            _vis["task"] = _spawn(visualize(client, params), "visualizer")
+            _vis["task"] = _spawn(visualize(params), "visualizer")
         elif not params["visualizer"] and vis_running:
             _vis["task"].cancel()
         elif params["visualizer"]:
@@ -481,7 +535,7 @@ async def main() -> None:
         raise SystemExit(f"TIMEBOX_ADDRESS {DEFAULT_ADDRESS!r} is not a MAC address")
 
     agent_bus = await start_agent(DEFAULT_ADDRESS)
-    client = await connect_le(DEFAULT_ADDRESS)
+    client = await ensure_le()
     await client.set_brightness(80)
     print("LE control connected", flush=True)
 
@@ -508,9 +562,7 @@ async def main() -> None:
         params = parse_params(raw)
 
         try:
-            if not _le_alive(client):
-                print("LE link lost — reconnecting", flush=True)
-                client = await connect_le(DEFAULT_ADDRESS)
+            client = await ensure_le()
             await handle(client, params)
             # Log keys only: notification text is private and journald
             # would keep it forever.
@@ -520,11 +572,9 @@ async def main() -> None:
             # Only tear the link down when it is actually the problem —
             # anything else (bad sound file, pactl hiccup) must not cost
             # us the connection.
-            if isinstance(exc, BleakError) or not _le_alive(client):
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
+            client = _le["client"]
+            if client is not None and (isinstance(exc, BleakError) or not _le_alive(client)):
+                await drop_le()
 
 
 if __name__ == "__main__":
