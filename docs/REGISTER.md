@@ -10,5 +10,6 @@ same change as the memo file.
 | [TBX-26-003](TBX-26-003-kde-notification-bridge.txt) | KDE notification bridge — eavesdropping the session bus | 2026-07-12 | FINAL |
 | [TBX-26-004](TBX-26-004-verify-outcomes.txt) | Check the outcome thoroughly — visualizer lessons | 2026-07-13 | FINAL |
 | [TBX-26-005](TBX-26-005-tunnel-visualizer.txt) | Tunnel visualizer — spectrum rings, per-pixel analysis, live knobs | 2026-07-13 | FINAL |
+| [TBX-26-006](TBX-26-006-visualizer-wedge.txt) | Visualizer wedge — three stacked deadlocks on the exit path | 2026-07-13 | FINAL |
 | [TS-26-001](TS-26-001-audio-delivery-trade-study.txt) | Audio delivery through the box speaker — trade study | 2026-07-12 | FINAL |
 | [TS-26-002](TS-26-002-code-production-quality-trade-study.txt) | AI-agent code production without upfront security rules | 2026-07-12 | FINAL |

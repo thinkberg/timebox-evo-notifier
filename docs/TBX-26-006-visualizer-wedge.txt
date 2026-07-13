@@ -1,0 +1,84 @@
+TECHNICAL MEMORANDUM                                         TBX-26-006
+
+SUBJECT:      The visualizer wedge - three stacked deadlocks between a
+              dead BLE link and a dead capture process
+DATE:         2026-07-13
+STATUS:       FINAL - fixes validated against forced link loss; the
+              box power-cycle scenario awaits operator confirmation
+
+
+SUMMARY. After the box was switched off and on, the daemon reported
+"visualizer already running" while the panel showed a stuck image. The
+task was alive but suspended forever in its own error handling. Three
+independent defects stacked in one code path, which is why each fix
+alone appeared not to work: BlueZ's Disconnect on a powered-off device
+hangs for minutes and swallows cancellation; parec answers SIGTERM by
+flushing onto a full pipe nobody reads, so it never exits; and even
+with the child killed and reaped, asyncio's Process.wait() deadlocks
+while unread pipe data keeps the stream paused. The decisive tool was
+a SIGUSR2 handler that prints every asyncio task's suspension point -
+OS-thread dumps (py-spy) cannot see suspended coroutines and showed
+an idle process while the task hung. Fixed by detaching the LE
+teardown, SIGKILLing parec, and draining its pipe to EOF before
+wait(). Forced link loss now recovers end to end in 13 seconds.
+
+1. INCIDENT. Box powered off during an endless visualizer run. The
+panel write failed ("Not connected"), the recovery path started - and
+the journal went silent for six minutes, resuming only around the
+time the box was switched back on. A later FIFO request answered
+"visualizer already running", yet nothing rendered: the task was
+parked inside its except/finally chain, never reaching the redial.
+
+2. DIAGNOSIS. Reproduced with `bluetoothctl disconnect` mid-capture.
+
+   2.1 Invisible to thread dumps. py-spy showed every OS thread idle
+   in epoll/select - correct, and useless: a suspended coroutine
+   lives in the event loop's data structures, on no thread stack.
+   Added a SIGUSR2 handler printing asyncio.all_tasks() with each
+   task's suspension frame. It pointed at the same line twice:
+   `await proc.wait()` in the capture teardown.
+
+   2.2 Layer one - BlueZ Disconnect on a dead device. The original
+   six-minute gap: `client.disconnect()` against a powered-off box
+   blocks inside BlueZ until the device reappears, and it swallows
+   task cancellation, so even asyncio.wait_for() never returns (the
+   timeout fires, the cancel is ignored, wait_for awaits forever).
+
+   2.3 Layer two - parec's graceful SIGTERM. After the write failure
+   nobody reads the capture pipe; parec keeps producing until the
+   pipe fills, then blocks in write(). SIGTERM triggers pacat's
+   drain-and-exit path - which blocks on the same full pipe. The
+   child never exits; proc.wait() waits forever.
+
+   2.4 Layer three - asyncio's wait() needs the pipe closed. With
+   the child SIGKILLed and reaped, wait() STILL hung: the subprocess
+   transport only completes once its pipe transports disconnect, but
+   the StreamReader had hit its 64 KiB high-water mark and paused
+   reading - paused pipes never reach EOF. A dead, reaped child and
+   a deadlocked wait() at the same time.
+
+3. FIXES (timebox_daemon.py).
+
+   3.1 drop_le() detaches: the shared client reference is nulled
+   immediately and the disconnect runs in a background task bounded
+   by wait_for(10) - the redial never waits on the corpse. Redials
+   log "LE link lost — reconnecting" / "LE reconnected" always
+   (an earlier revision was silent after drop_le, hiding recovery).
+
+   3.2 Capture teardown: proc.kill() instead of terminate() - there
+   is nothing in parec's buffer worth flushing - then read stdout to
+   EOF so the transport closes, then proc.wait().
+
+   3.3 SIGUSR2 task dump kept as a permanent diagnostic. `kill
+   -USR2` on the daemon prints every task's suspension point to the
+   journal; this project's BT stack has now wedged awaits three
+   different ways, and the next one is a signal away from a
+   line-precise culprit.
+
+4. DISPOSITION. Validated per TBX-26-004 practice: forced link drop
+during a stereo tunnel run recovers write-failure -> redial ->
+capture respawn in 13 s, logged at every step. The lesson extends
+TBX-26-004 (3.2): every await on an external stack - BlueZ calls,
+child-process teardown, pipe reads - either carries a bound or runs
+detached, because "the exit path" is exactly where three components
+were each waiting for a peer that was already dead.

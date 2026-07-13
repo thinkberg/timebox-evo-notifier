@@ -34,6 +34,7 @@ import colorsys
 import json
 import math
 import os
+import signal
 import stat
 import subprocess
 from collections import deque
@@ -76,30 +77,45 @@ _le: dict = {"client": None}
 _le_lock = asyncio.Lock()
 
 
+_le_dialed = False  # first connect logs elsewhere; redials log here
+
+
 async def ensure_le():
     """The current LE client, reconnecting first if the link is down."""
+    global _le_dialed
     async with _le_lock:
         client = _le["client"]
         if client is None or not _le_alive(client):
-            if client is not None:
+            if _le_dialed:
                 print("LE link lost — reconnecting", flush=True)
             _le["client"] = await connect_le(DEFAULT_ADDRESS)
+            if _le_dialed:
+                print("LE reconnected", flush=True)
+            _le_dialed = True
         return _le["client"]
 
 
 async def drop_le() -> None:
-    """Tear the LE link down so the next ensure_le() redials.
+    """Let go of the LE link so the next ensure_le() redials.
 
     Needed because a box-side reconnect can leave the client "connected"
     but with services unresolved — every write fails until we let go.
+    The teardown runs detached: disconnecting from a powered-off box can
+    hang inside BlueZ for minutes (even cancellation gets swallowed), and
+    the redial must never wait on the corpse.
     """
     client = _le["client"]
     if client is None:
         return
-    try:
-        await client.disconnect()
-    except Exception:
-        pass
+    _le["client"] = None
+
+    async def _reap() -> None:
+        try:
+            await asyncio.wait_for(client.disconnect(), timeout=10)
+        except Exception:
+            pass  # best effort — the link is gone either way
+
+    _spawn(_reap(), "LE teardown")
 
 
 # --- FIFO request parsing ------------------------------------------------------
@@ -572,9 +588,17 @@ async def visualize(params: dict) -> None:
             finally:
                 if proc is not None:
                     try:
-                        proc.terminate()
+                        # kill, not terminate: parec answers SIGTERM by
+                        # flushing onto a full pipe nobody reads any more —
+                        # it blocks forever and proc.wait() wedges recovery.
+                        proc.kill()
                     except ProcessLookupError:
                         pass  # parec already gone — that's why we're here
+                    # Drain to EOF: with unread audio backlogged, asyncio
+                    # pauses the pipe and proc.wait() deadlocks even after
+                    # the child is dead — wait() needs the pipe closed too.
+                    while await proc.stdout.read(65536):
+                        pass
                     await proc.wait()
     finally:
         _vis["overlay"] = None
@@ -719,12 +743,24 @@ def fifo_lines(path: str):
                     yield line
 
 
+def _dump_tasks() -> None:
+    """SIGUSR2: print where every asyncio task is suspended — the BT stack
+    has wedged awaits more than once and thread dumps can't see them."""
+    for task in asyncio.all_tasks():
+        frames = task.get_stack(limit=8)
+        where = " <- ".join(
+            f"{f.f_code.co_name}:{f.f_lineno}" for f in reversed(frames))
+        print(f"task {task.get_coro().__qualname__}: {where or 'done'}",
+              flush=True)
+
+
 async def main() -> None:
     if not DEFAULT_ADDRESS:
         raise SystemExit("set TIMEBOX_ADDRESS to the box's Bluetooth MAC")
     if not valid_address(DEFAULT_ADDRESS):
         raise SystemExit(f"TIMEBOX_ADDRESS {DEFAULT_ADDRESS!r} is not a MAC address")
 
+    asyncio.get_running_loop().add_signal_handler(signal.SIGUSR2, _dump_tasks)
     agent_bus = await start_agent(DEFAULT_ADDRESS)
     client = await ensure_le()
     await client.set_brightness(80)
