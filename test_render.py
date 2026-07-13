@@ -7,7 +7,14 @@ No framework — run it: .venv/bin/python test_render.py
 """
 
 from timebox_bridge import CLOSED_BY_CALL, CLOSED_DISMISSED, CLOSED_EXPIRED, UnreadTracker
-from timebox_daemon import ScrollOverlay, StaticOverlay, parse_params
+from timebox_daemon import (
+    _RINGS,
+    _tunnel,
+    _tunnel_frame,
+    ScrollOverlay,
+    StaticOverlay,
+    parse_params,
+)
 from timebox_notify import (
     _orig_encode_image,
     _safe_encode_image,
@@ -57,6 +64,43 @@ assert 0 <= static.row0 < static.row1 <= 15
 frame2 = [(9, 9, 9)] * 256
 assert static.stamp(frame2) is True
 assert frame2[static.row0 * 16] == (0, 0, 0)
+
+# Tunnel: the 8 rings partition the panel exactly; the first frame lights
+# only the outer ring; history reaches the center after 8 frames with
+# brightness bleeding out monotonically; silence renders black; only known
+# modes pass validation.
+assert [len(r) for r in _RINGS] == [60, 52, 44, 36, 28, 20, 12, 4]
+assert sorted(i for ring in _RINGS for i in ring) == list(range(256))
+_tunnel["hist"].clear()
+frame = _tunnel_frame([16] * 16)
+assert all(frame[i] != (0, 0, 0) for i in _RINGS[0])
+assert all(frame[i] == (0, 0, 0) for i in _RINGS[1])
+for _ in range(7):
+    frame = _tunnel_frame([16] * 16)
+assert frame[_RINGS[7][0]] != (0, 0, 0)  # oldest frame reached the center
+bright = [max(frame[ring[0]]) for ring in _RINGS]
+assert all(a >= b for a, b in zip(bright, bright[1:]))  # bleed-out
+_tunnel["hist"].clear()
+assert all(c == (0, 0, 0) for c in _tunnel_frame([0] * 16))
+_tunnel["hist"].clear()
+_tunnel["offset"] = 0  # a lone lit band revolves in single-pixel steps
+lone = [0] * 16
+lone[0] = 16
+
+
+def _lit():
+    frame = _tunnel_frame(lone)
+    return [j for j, i in enumerate(_RINGS[0]) if frame[i] != (0, 0, 0)]
+
+
+first = cur = _lit()
+for _ in range(9):
+    prev, cur = cur, _lit()
+    assert cur in (prev, [(j + 1) % 60 for j in prev])
+assert cur != first
+_tunnel["hist"].clear()
+assert parse_params({"mode": "tunnel"})["mode"] == "tunnel"
+assert "mode" not in parse_params({"mode": "spiral"})
 
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a

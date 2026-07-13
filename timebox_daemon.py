@@ -14,9 +14,11 @@ envelope icon; fps sets scroll speed), count, icon_color [r,g,b],
 number_color [r,g,b], background [r,g,b], brightness 0-100,
 sound <path>, silent true/false. visualizer true streams a 16-band
 spectrum of the system audio (endless — capturing only while audio
-plays — or `seconds` if given); visualizer false stops it.
+plays — or `seconds` if given); visualizer false stops it. mode picks
+the look: "bars" (default) or "tunnel" — concentric spectrum rings
+flowing inward, colors fading with age; switchable while running.
 Notifications arriving while it runs are
-rendered on top of the bars over an opaque background band.
+rendered on top of the frame over an opaque background band.
 
 Bad values are clamped or replaced with defaults — a malformed request
 must never cost us the BLE link.
@@ -24,11 +26,13 @@ must never cost us the BLE link.
 
 import array
 import asyncio
+import colorsys
 import json
 import math
 import os
 import stat
 import subprocess
+from collections import deque
 from dataclasses import dataclass, field
 
 from bleak.exc import BleakError
@@ -135,6 +139,8 @@ def parse_params(raw: dict) -> dict:
             p["seconds"] = min(3600.0, max(1.0, float(raw["seconds"])))
         except Exception:
             pass
+    if raw.get("mode") in ("bars", "tunnel"):
+        p["mode"] = raw["mode"]
     return p
 
 
@@ -144,6 +150,8 @@ VIS_RATE = 24000
 VIS_FPS = 10
 VIS_BANDS = 16
 SILENCE_SECS = 10  # digital silence before capture (and KDE's mic icon) pauses
+TUNNEL_FADE = 0.92  # per-ring brightness decay toward the center
+TUNNEL_SPIN = 0.5  # signal rotation, border px per frame (full turn = 12 s at 10 fps)
 # ponytail: pure-python Goertzel, ~40k mults/frame; numpy FFT if CPU bothers.
 _VIS_FREQS = [50.0 * (8000.0 / 50.0) ** (i / (VIS_BANDS - 1)) for i in range(VIS_BANDS)]
 
@@ -173,6 +181,53 @@ def _bar_frame(heights: list[int]) -> list[RGB]:
         for row in range(h):  # row 0 = bottom; green low, yellow mid, red top
             color = (0, 220, 60) if row < 9 else (240, 200, 0) if row < 13 else (255, 40, 40)
             pixels[(15 - row) * 16 + x] = color
+    return pixels
+
+
+def _rings() -> list[list[int]]:
+    """The panel as 8 concentric rings, each ordered clockwise from its
+    top-left corner. Perimeters 60, 52, … 4 — together exactly 256 px."""
+    rings = []
+    for r in range(8):
+        lo, hi = r, 15 - r
+        path = ([(lo, x) for x in range(lo, hi)]
+                + [(y, hi) for y in range(lo, hi)]
+                + [(hi, x) for x in range(hi, lo, -1)]
+                + [(y, lo) for y in range(hi, lo, -1)])
+        rings.append([y * 16 + x for y, x in path])
+    return rings
+
+
+_RINGS = _rings()
+# Tunnel state: outer-ring patterns, newest first (entry r = r frames ago).
+_tunnel: dict = {"hist": deque(maxlen=len(_RINGS)), "offset": 0}
+
+
+def _tunnel_frame(heights: list[int]) -> list[RGB]:
+    """Psychedelic tunnel: the current spectrum wrapped around the border,
+    history shrinking ring by ring toward the center, colors bleeding out
+    with age. Hue = band, brightness = band height; the whole pattern
+    revolves TUNNEL_SPIN border pixels per frame, so the history twists."""
+    outer = len(_RINGS[0])
+    _tunnel["offset"] = (_tunnel["offset"] + TUNNEL_SPIN) % outer
+    offset = int(_tunnel["offset"])
+    pattern = []
+    for i in range(outer):
+        band = ((i - offset) % outer) * VIS_BANDS // outer
+        # sqrt lifts quiet bands into visibility; 0 stays black
+        r, g, b = colorsys.hsv_to_rgb(
+            band / VIS_BANDS, 1.0, math.sqrt(heights[band] / 16))
+        pattern.append((int(255 * r), int(255 * g), int(255 * b)))
+    _tunnel["hist"].appendleft(pattern)
+    pixels: list[RGB] = [(0, 0, 0)] * 256
+    for age, ring in enumerate(_RINGS):
+        if age >= len(_tunnel["hist"]):
+            break
+        src = _tunnel["hist"][age]
+        fade = TUNNEL_FADE ** age
+        for j, idx in enumerate(ring):
+            r, g, b = src[j * outer // len(ring)]
+            pixels[idx] = (int(r * fade), int(g * fade), int(b * fade))
     return pixels
 
 
@@ -236,8 +291,9 @@ class StaticOverlay:
         return self.frames > 0
 
 
-# Visualizer state: the running task plus the overlay stamped on each frame.
-_vis: dict = {"task": None, "overlay": None}
+# Visualizer state: the running task, the overlay stamped on each frame,
+# and the render mode ("bars" or "tunnel") — switchable while running.
+_vis: dict = {"task": None, "overlay": None, "mode": "bars"}
 
 
 def _sink_running() -> bool:
@@ -300,6 +356,7 @@ async def visualize(params: dict) -> None:
     sent = 0
     quiet = 0
     waiting = False  # capture paused/lost; log the resume once, not per retry
+    _tunnel["hist"].clear()
     print(f"visualizer started ({seconds}s)" if seconds
           else 'visualizer started (endless — stop with {"visualizer": false})',
           flush=True)
@@ -311,6 +368,7 @@ async def visualize(params: dict) -> None:
                 if not waiting:
                     waiting = True
                     print("visualizer: audio idle — capture paused", flush=True)
+                    _tunnel["hist"].clear()  # stale history; restart fresh
                     await _blank_panel(client)
                 # Overlays are normally stamped onto capture frames; keep
                 # notifications visible while paused.
@@ -366,8 +424,10 @@ async def visualize(params: dict) -> None:
                             quiet = 0
                             break
                     heights, peak = await asyncio.to_thread(_band_heights, samples, peak)
+                    frame = (_tunnel_frame(heights) if _vis["mode"] == "tunnel"
+                             else _bar_frame(heights))
                     async with _panel_lock:
-                        await client.static_image(_apply_overlay(_bar_frame(heights)))
+                        await client.static_image(_apply_overlay(frame))
                     sent += 1
             except BleakError as exc:
                 if total is not None:
@@ -387,6 +447,7 @@ async def visualize(params: dict) -> None:
                     waiting = True
                     print("visualizer: audio capture ended — waiting for audio",
                           flush=True)
+                    _tunnel["hist"].clear()  # stale history; restart fresh
                     await _blank_panel(client)
                 await asyncio.sleep(2)
             finally:
@@ -463,11 +524,16 @@ async def handle(client, params: dict) -> None:
 
     if "visualizer" in params:
         if params["visualizer"] and not vis_running:
+            _vis["mode"] = params.get("mode", "bars")
             _vis["task"] = _spawn(visualize(params), "visualizer")
         elif not params["visualizer"] and vis_running:
             _vis["task"].cancel()
         elif params["visualizer"]:
-            print("visualizer already running", flush=True)
+            if params.get("mode", _vis["mode"]) != _vis["mode"]:
+                _vis["mode"] = params["mode"]
+                print(f"visualizer mode: {_vis['mode']}", flush=True)
+            else:
+                print("visualizer already running", flush=True)
         return
 
     if not params["silent"]:

@@ -103,6 +103,7 @@ echo '{"count": 7, "icon_color": [40,200,255], "sound": "/usr/share/sounds/ocean
 # Live 16-band spectrum of whatever the system is playing
 echo '{"visualizer": true}' > $FIFO            # endless
 echo '{"visualizer": true, "seconds": 30}' > $FIFO  # fixed duration
+echo '{"visualizer": true, "mode": "tunnel"}' > $FIFO  # psychedelic tunnel
 echo '{"visualizer": false}' > $FIFO           # stop
 
 # Notifications sent while the visualizer runs are drawn on top of the
@@ -131,6 +132,7 @@ All keys (each optional):
 | `silent`       | `true` = no sound                          | `false`            |
 | `visualizer`   | `true` starts the live spectrum, `false` stops it | —           |
 | `seconds`      | visualizer duration; omit for endless      | endless            |
+| `mode`         | visualizer look: `"bars"`, or `"tunnel"` — spectrum rings flowing inward, fading with age; switchable while running | `"bars"` |
 
 ## KDE notifications on the box
 
