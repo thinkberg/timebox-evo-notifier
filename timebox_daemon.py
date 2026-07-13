@@ -322,8 +322,14 @@ def _tunnel_render(pattern: list[RGB]) -> list[RGB]:
         fade = _vis["fade"] ** age
         for j, idx in enumerate(ring):
             r, g, b = src[j * outer // len(ring)]
-            pixels[idx] = (int(r * fade), int(g * fade), int(b * fade))
+            # Quantized to 32-steps: fewer palette colors → ~5 instead of 8
+            # BLE chunks per frame; the steps are invisible on the panel.
+            pixels[idx] = (_q32(r * fade), _q32(g * fade), _q32(b * fade))
     return pixels
+
+
+def _q32(v: float) -> int:
+    return min(255, (int(v) + 16) & ~31)
 
 
 # --- notification overlays (stamped onto visualizer frames) --------------------
@@ -506,6 +512,12 @@ async def visualize(params: dict) -> None:
                 )
                 while total is None or sent < total:
                     data = await proc.stdout.readexactly(bytes_per_frame)
+                    # Render the NEWEST audio: BLE writes can be slower than
+                    # capture, and stale frames would lag the music.
+                    # ponytail: StreamReader has no "available" API; keep the
+                    # private-buffer poke in this one place (like _le_alive).
+                    while len(proc.stdout._buffer) >= bytes_per_frame:
+                        data = await proc.stdout.readexactly(bytes_per_frame)
                     if waiting:
                         waiting = False
                         print("visualizer: audio capture resumed", flush=True)

@@ -153,6 +153,14 @@ for j in range(30):  # same frequency sits diametrically opposite
     assert frame[_RINGS[0][(8 + j) % 60]] == frame[_RINGS[0][(38 + j) % 60]]
 _tunnel["hist"].clear()
 
+# Latency guard: even a worst-case dense tunnel frame must encode small —
+# unquantized frames hit 8 BLE image chunks, which made mode changes
+# feel sluggish (typical music frames: 5).
+for k in range(8):
+    frame = _tunnel_frame([(i * 7 + k * 5) % 17 for i in range(60)])
+assert (len(_safe_encode_image(frame)) + 137) // 138 <= 6
+_tunnel["hist"].clear()
+
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a
 # new notification; dismissing clears it, merely expiring does not.
