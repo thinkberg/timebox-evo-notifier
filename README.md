@@ -106,6 +106,7 @@ echo '{"visualizer": true, "seconds": 30}' > $FIFO  # fixed duration
 echo '{"visualizer": true, "mode": "tunnel"}' > $FIFO  # psychedelic tunnel
 echo '{"visualizer": true, "mode": "tunnel", "spin": 2}' > $FIFO  # faster rotation
 echo '{"visualizer": true, "fade": 0.7, "bands": 16}' > $FIFO  # tune the look live
+echo '{"visualizer": true, "stereo": true}' > $FIFO  # split L/R channels
 echo '{"visualizer": false}' > $FIFO           # stop
 
 # Notifications sent while the visualizer runs are drawn on top of the
@@ -138,6 +139,7 @@ All keys (each optional):
 | `spin`         | tunnel rotation in border px per frame, −5…5; negative reverses, 0 stops; switchable while running | `0.5` |
 | `fade`         | tunnel per-ring brightness decay toward the center, 0…1; switchable while running | `0.92` |
 | `bands`        | tunnel analyzer width, 2…60; switchable while running | `60` |
+| `stereo`       | analyze L/R separately: bars mirror bottom (L) / top (R) at half height, tunnel splits into semicircles with the same frequency diametrically opposite; switchable while running | `false` |
 
 ## KDE notifications on the box
 

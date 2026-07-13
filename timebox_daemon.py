@@ -18,7 +18,9 @@ plays — or `seconds` if given); visualizer false stops it. mode picks
 the look: "bars" (default) or "tunnel" — concentric spectrum rings
 flowing inward, colors fading with age. Tunnel knobs: spin (rotation
 in border px/frame; negative reverses, 0 stops), fade (per-ring decay,
-0-1), bands (analyzer width, 2-60). All switchable while running.
+0-1), bands (analyzer width, 2-60). stereo true analyzes L/R apart:
+bars mirror bottom (L) / top (R) at half height, the tunnel splits
+into left/right semicircles. All switchable while running.
 Notifications arriving while it runs are
 rendered on top of the frame over an opaque background band.
 
@@ -159,6 +161,8 @@ def parse_params(raw: dict) -> dict:
             p["bands"] = min(60, max(2, int(raw["bands"])))
         except Exception:
             pass
+    if "stereo" in raw:
+        p["stereo"] = bool(raw["stereo"])
     return p
 
 
@@ -184,7 +188,7 @@ _VIS_FREQS = _vis_freqs(VIS_BANDS)
 
 
 def _band_heights(
-    samples: array.array, peak: float, freqs: list[float]
+    samples, peak: float, freqs: list[float], rows: int = 16
 ) -> tuple[list[int], float]:
     n = len(samples)
     heights = []
@@ -199,17 +203,52 @@ def _band_heights(
         # Auto-gain: slow-decay running peak (0.995/frame ≈ 2 s half-life
         # at 10 fps) so quiet and loud material both fill the panel.
         peak = max(peak * 0.995, mag, 1.0)
-        # 17, not 16: a band sitting exactly at peak must reach full height.
-        heights.append(min(16, int(17 * mag / peak)))
+        # rows+1: a band sitting exactly at peak must reach full height.
+        heights.append(min(rows, int((rows + 1) * mag / peak)))
     return heights, peak
+
+
+def _frame_heights(samples, peak, freqs, rows, stereo):
+    """Heights for one interleaved-stereo capture frame.
+
+    Mono mixes the channels down; stereo returns a (left, right) pair
+    sharing one auto-gain peak so the two sides stay comparable.
+    """
+    left, right = samples[0::2], samples[1::2]
+    if not stereo:
+        mono = array.array("h", ((l + r) // 2 for l, r in zip(left, right)))
+        return _band_heights(mono, peak, freqs, rows)
+    hl, peak = _band_heights(left, peak, freqs, rows)
+    hr, peak = _band_heights(right, peak, freqs, rows)
+    return (hl, hr), peak
+
+
+def _bar_color(row: int, rows: int) -> RGB:
+    # green low, yellow mid, red top — same proportions at any height
+    if row * 16 < rows * 9:
+        return (0, 220, 60)
+    if row * 16 < rows * 13:
+        return (240, 200, 0)
+    return (255, 40, 40)
 
 
 def _bar_frame(heights: list[int]) -> list[RGB]:
     pixels: list[RGB] = [(0, 0, 0)] * 256
     for x, h in enumerate(heights):
-        for row in range(h):  # row 0 = bottom; green low, yellow mid, red top
-            color = (0, 220, 60) if row < 9 else (240, 200, 0) if row < 13 else (255, 40, 40)
-            pixels[(15 - row) * 16 + x] = color
+        for row in range(h):  # row 0 = bottom
+            pixels[(15 - row) * 16 + x] = _bar_color(row, 16)
+    return pixels
+
+
+def _bar_frame_stereo(left: list[int], right: list[int]) -> list[RGB]:
+    """Left channel grows up from the bottom edge, right channel down from
+    the top, 8 rows each, meeting in the middle."""
+    pixels: list[RGB] = [(0, 0, 0)] * 256
+    for x in range(16):
+        for row in range(left[x]):
+            pixels[(15 - row) * 16 + x] = _bar_color(row, 8)
+        for row in range(right[x]):
+            pixels[row * 16 + x] = _bar_color(row, 8)
     return pixels
 
 
@@ -232,22 +271,48 @@ _RINGS = _rings()
 _tunnel: dict = {"hist": deque(maxlen=len(_RINGS)), "offset": 0}
 
 
+def _tunnel_color(band: int, nb: int, height: int) -> RGB:
+    # sqrt lifts quiet bands into visibility; 0 stays black
+    r, g, b = colorsys.hsv_to_rgb(band / nb, 1.0, math.sqrt(height / 16))
+    return (int(255 * r), int(255 * g), int(255 * b))
+
+
 def _tunnel_frame(heights: list[int]) -> list[RGB]:
     """Psychedelic tunnel: the current spectrum wrapped around the border,
     history shrinking ring by ring toward the center, colors bleeding out
-    with age. Hue = band, brightness = band height; the whole pattern
-    revolves TUNNEL_SPIN border pixels per frame, so the history twists."""
+    with age. Hue = band, brightness = band height."""
     outer = len(_RINGS[0])
     nb = len(heights)  # 1:1 pixel:band at 60; any count resamples cleanly
+    return _tunnel_render(
+        [_tunnel_color(i * nb // outer, nb, heights[i * nb // outer])
+         for i in range(outer)])
+
+
+def _tunnel_frame_stereo(left: list[int], right: list[int]) -> list[RGB]:
+    """Stereo tunnel: one semicircle per channel, point-symmetric — the
+    same frequency sits diametrically opposite its other channel. R runs
+    low→high down the right side from top-center; L continues around,
+    low→high up the left side from bottom-center."""
+    outer = len(_RINGS[0])
+    half = outer // 2
+    nb = len(left)
+    pattern: list[RGB] = [(0, 0, 0)] * outer
+    for j in range(half):
+        band = j * nb // half
+        # ring index 8 = just right of top-center; +half = 180° opposite
+        pattern[(8 + j) % outer] = _tunnel_color(band, nb, right[band])
+        pattern[(8 + j + half) % outer] = _tunnel_color(band, nb, left[band])
+    return _tunnel_render(pattern)
+
+
+def _tunnel_render(pattern: list[RGB]) -> list[RGB]:
+    """Rotate the border pattern by the accumulated spin, push it onto the
+    history, and paint the rings — newest outside, fading inward."""
+    outer = len(pattern)
     _tunnel["offset"] = (_tunnel["offset"] + _vis["spin"]) % outer
-    offset = int(_tunnel["offset"])
-    pattern = []
-    for i in range(outer):
-        band = ((i - offset) % outer) * nb // outer
-        # sqrt lifts quiet bands into visibility; 0 stays black
-        r, g, b = colorsys.hsv_to_rgb(
-            band / nb, 1.0, math.sqrt(heights[band] / 16))
-        pattern.append((int(255 * r), int(255 * g), int(255 * b)))
+    off = int(_tunnel["offset"])
+    if off:
+        pattern = pattern[-off:] + pattern[:-off]
     _tunnel["hist"].appendleft(pattern)
     pixels: list[RGB] = [(0, 0, 0)] * 256
     for age, ring in enumerate(_RINGS):
@@ -323,7 +388,7 @@ class StaticOverlay:
 
 # Visualizer state: the running task, the overlay stamped on each frame,
 # and the render knobs — all switchable while running.
-_vis: dict = {"task": None, "overlay": None, "mode": "bars",
+_vis: dict = {"task": None, "overlay": None, "mode": "bars", "stereo": False,
               "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE, "bands": len(_RINGS[0])}
 
 
@@ -382,7 +447,7 @@ async def visualize(params: dict) -> None:
     """
     seconds = params.get("seconds")
     total = int(seconds * VIS_FPS) if seconds else None
-    bytes_per_frame = (VIS_RATE // VIS_FPS) * 2
+    bytes_per_frame = (VIS_RATE // VIS_FPS) * 2 * 2  # 2 ch × 2 B, interleaved
     peak = 1.0
     sent = 0
     quiet = 0
@@ -435,7 +500,7 @@ async def visualize(params: dict) -> None:
                 proc = await asyncio.create_subprocess_exec(
                     "parec", "--client-name=TimeBox visualizer",
                     f"--device={sink}.monitor", "--format=s16le",
-                    f"--rate={VIS_RATE}", "--channels=1", "--raw",
+                    f"--rate={VIS_RATE}", "--channels=2", "--raw",
                     "--latency-msec=100",  # default adaptive latency delivers ~2s bursts
                     stdout=asyncio.subprocess.PIPE,
                 )
@@ -454,15 +519,20 @@ async def visualize(params: dict) -> None:
                             # way. Track corked state via pactl if it bites.
                             quiet = 0
                             break
-                    # One read per frame: a live mode switch during the
-                    # to_thread await must not mismatch heights and renderer.
-                    mode = _vis["mode"]
+                    # One read per frame: a live mode/stereo switch during
+                    # the to_thread await must not mismatch heights/renderer.
+                    mode, stereo = _vis["mode"], _vis["stereo"]
                     freqs = (_vis_freqs(_vis["bands"]) if mode == "tunnel"
                              else _VIS_FREQS)
+                    rows = 8 if stereo and mode == "bars" else 16
                     heights, peak = await asyncio.to_thread(
-                        _band_heights, samples, peak, freqs)
-                    frame = (_tunnel_frame(heights) if mode == "tunnel"
-                             else _bar_frame(heights))
+                        _frame_heights, samples, peak, freqs, rows, stereo)
+                    if mode == "tunnel":
+                        frame = (_tunnel_frame_stereo(*heights) if stereo
+                                 else _tunnel_frame(heights))
+                    else:
+                        frame = (_bar_frame_stereo(*heights) if stereo
+                                 else _bar_frame(heights))
                     async with _panel_lock:
                         await client.static_image(_apply_overlay(frame))
                     sent += 1
@@ -562,6 +632,7 @@ async def handle(client, params: dict) -> None:
     if "visualizer" in params:
         if params["visualizer"] and not vis_running:
             _vis["mode"] = params.get("mode", "bars")
+            _vis["stereo"] = params.get("stereo", False)
             _vis["spin"] = params.get("spin", TUNNEL_SPIN)
             _vis["fade"] = params.get("fade", TUNNEL_FADE)
             _vis["bands"] = params.get("bands", len(_RINGS[0]))
@@ -570,7 +641,7 @@ async def handle(client, params: dict) -> None:
             _vis["task"].cancel()
         elif params["visualizer"]:
             changed = []
-            for key in ("mode", "spin", "fade", "bands"):
+            for key in ("mode", "spin", "fade", "bands", "stereo"):
                 if params.get(key, _vis[key]) != _vis[key]:
                     _vis[key] = params[key]
                     changed.append(f"{key}: {params[key]}")

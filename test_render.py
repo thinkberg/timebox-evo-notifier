@@ -6,11 +6,17 @@ KDE bridge's unread bookkeeping.
 No framework — run it: .venv/bin/python test_render.py
 """
 
+from array import array
+
 from timebox_bridge import CLOSED_BY_CALL, CLOSED_DISMISSED, CLOSED_EXPIRED, UnreadTracker
 from timebox_daemon import (
     _RINGS,
+    _bar_frame_stereo,
+    _frame_heights,
     _tunnel,
     _tunnel_frame,
+    _tunnel_frame_stereo,
+    _vis_freqs,
     ScrollOverlay,
     StaticOverlay,
     parse_params,
@@ -120,6 +126,32 @@ assert parse_params({"bands": 999})["bands"] == 60
 assert parse_params({"bands": 1})["bands"] == 2
 assert "fade" not in parse_params({"fade": "x"})
 assert "bands" not in parse_params({"bands": "x"})
+assert parse_params({"stereo": 1})["stereo"] is True
+assert parse_params({"stereo": False})["stereo"] is False
+assert "stereo" not in parse_params({})
+
+# Stereo: the mixdown of identical channels matches the per-channel
+# analysis; heights respect the row budget; each bar half stays on its
+# side; identical channels give a mirror-symmetric tunnel.
+sig = array("h", [1000, 1000, -800, -800] * 600)  # L == R, interleaved
+freqs = _vis_freqs(16)
+mono_h, _ = _frame_heights(sig, 1.0, freqs, 16, False)
+(hl, hr), _ = _frame_heights(sig, 1.0, freqs, 16, True)
+assert mono_h == hl
+(hl8, _), _ = _frame_heights(sig, 1.0, freqs, 8, True)
+assert 0 < max(hl8) <= 8
+frame = _bar_frame_stereo([8] + [0] * 15, [0] * 16)
+assert frame[15 * 16] != (0, 0, 0) and frame[8 * 16] != (0, 0, 0)  # bottom half
+assert all(frame[row * 16] == (0, 0, 0) for row in range(8))  # top half dark
+frame = _bar_frame_stereo([0] * 16, [8] + [0] * 15)
+assert frame[0] != (0, 0, 0) and frame[7 * 16] != (0, 0, 0)  # top half
+assert all(frame[row * 16] == (0, 0, 0) for row in range(8, 16))
+_tunnel["hist"].clear()
+_tunnel["offset"] = 0
+frame = _tunnel_frame_stereo([16] * 30, [16] * 30)
+for j in range(30):  # same frequency sits diametrically opposite
+    assert frame[_RINGS[0][(8 + j) % 60]] == frame[_RINGS[0][(38 + j) % 60]]
+_tunnel["hist"].clear()
 
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a
