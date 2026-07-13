@@ -1,0 +1,70 @@
+TECHNICAL MEMORANDUM                                         TBX-26-004
+
+SUBJECT:      Check the outcome thoroughly - two visualizer defects
+              that shipped past a passing validation
+DATE:         2026-07-13
+STATUS:       FINAL - practice adopted, both defects resolved
+
+
+SUMMARY. The audio visualizer (TBX-26-002) passed its validation and
+then misbehaved twice in normal use: the endless mode died silently
+when its capture stream ended, and the capture itself lit a permanent,
+anonymous microphone-in-use icon in the KDE tray. Neither was a coding
+error in the tested path - both lived outside what validation had
+defined as "the outcome". The take: an outcome is everything the
+system now does differently, including what it does when a dependency
+goes away and what the rest of the desktop displays about it. Results
+that look right on the happy path are not results.
+
+1. BACKGROUND. TBX-26-002 validated the visualizer as: bars move
+correctly at 10 fps, overlays render, notifications stay responsive.
+It did. Both defects below were discovered by the operator during
+ordinary use, days apart from any code change.
+
+2. EPISODES.
+
+   2.1 Silent stop. The capture (`parec` on the default sink's
+   monitor) EOFs when the sink is switched, PipeWire restarts, or the
+   machine suspends. The endless visualizer treated EOF as the end
+   and exited; the panel froze on the last frame. The stop condition
+   had simply never been exercised: validation played audio and
+   watched bars, it never took the audio path away. Fix (b09491f):
+   retry loop - clear the bars, wait, re-query the sink, respawn.
+
+   2.2 The mic icon. Plasma's microphone indicator counts EVERY
+   client-owned recording stream; a sink monitor is indistinguishable
+   from a real microphone by design (plasma-pa, Phabricator D29312).
+   So the endless visualizer put an anonymous "parec is using the
+   microphone" icon in the tray, permanently. Nothing in the code was
+   wrong and nothing captured the microphone - the defect was a
+   side effect in a component nobody was watching during validation.
+   Fix (3c7e8a6): the stream is labeled "TimeBox visualizer", and
+   capture only runs while the sink is actually playing, so the icon
+   is truthful, attributable, and transient.
+
+3. THE TAKE. Do not take results for granted; unexpected things
+happen exactly where validation stopped looking.
+
+   3.1 Define the outcome wide. Not "does the feature produce the
+   intended output" but: what does the system as a whole now do
+   differently? Long-lived resources (a capture stream, a BT link, a
+   FIFO) are outcomes; so is anything another component displays or
+   decides because of them (tray icons, sink states, power
+   management).
+
+   3.2 Exercise the exits, not just the entrance. Every dependency a
+   feature holds open will go away at some point - kill it during the
+   test (`pkill parec`, box off, sink switched) and watch what the
+   feature does about it. TBX-26-003 (FIFO served only after audio
+   bring-up) was the same class of miss.
+
+   3.3 Watch the system around the change, live. This project's
+   checklist: journalctl for the daemons, pgrep for helper processes,
+   pactl for sink/stream state, the tray for indicators, the panel
+   itself for what the box shows. A clean compile, a green restart,
+   or one happy-path request is not verification.
+
+4. DISPOSITION. Practice applied since 2026-07-13; the fixes in 2.1
+and 2.2 were themselves validated this way (capture killed mid-run,
+tone played and stopped, indicator observed appearing and clearing,
+timed mode regression-checked).
