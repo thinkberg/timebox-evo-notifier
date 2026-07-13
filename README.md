@@ -111,9 +111,10 @@ echo '{"visualizer": false}' > $FIFO           # stop
 
 The visualizer records the default sink's *monitor* (what the speakers
 play — never the microphone), which KDE reports with the mic-in-use tray
-icon, labeled "TimeBox visualizer". In endless mode the capture — and
-with it the icon — pauses after 10 s of silence and resumes when audio
-plays again.
+icon, labeled "TimeBox visualizer" — but only while a real microphone
+device is present; with none attached KDE shows nothing at all. In
+endless mode the capture — and with it the icon — pauses after 10 s of
+silence and resumes when audio plays again.
 
 All keys (each optional):
 

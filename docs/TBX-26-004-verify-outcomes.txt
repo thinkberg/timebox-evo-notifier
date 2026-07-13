@@ -68,3 +68,20 @@ happen exactly where validation stopped looking.
 and 2.2 were themselves validated this way (capture killed mid-run,
 tone played and stopped, indicator observed appearing and clearing,
 timed mode regression-checked).
+
+5. ADDENDUM (2026-07-13) - the mic icon does not always appear.
+Operator observation, confirmed in the sources: the indicator only
+exists while at least one REAL microphone device is present.
+pulseaudio-qt drops every monitor source before it reaches the
+model (context.cpp source_cb: `monitor_of_sink != PA_INVALID_INDEX
+-> return`, marked FIXME), and plasma-pa's MicrophoneIndicator
+returns early when that model is empty. So the icon tracks mic
+PRESENCE and recording activity, not what is actually recorded:
+with no mic attached (this machine's normal state - only sink
+monitors exist) the visualizer captures with no icon at all; plug in a
+webcam or headset and the same capture shows as "microphone in
+use". The indicator misleads in both directions - a false alarm
+for monitor-only capture (2.2), false silence when no mic device
+is present. Underscores 3.1: what another component displays about
+a change depends on ITS state too, so observe it under more than
+one.
