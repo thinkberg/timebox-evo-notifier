@@ -57,9 +57,10 @@ with sub-second latency:
 ### Install as a systemd user service
 
 ```bash
-# Config (address required; PIN only if your box asks for one)
+# Config (address required; PIN only if your box asks for one;
+# LATLON only if you want weather on the box's clock — see below)
 mkdir -p ~/.config/timebox
-printf 'TIMEBOX_ADDRESS=<box-mac>\nTIMEBOX_PIN=<pin>\n' > ~/.config/timebox/env
+printf 'TIMEBOX_ADDRESS=<box-mac>\nTIMEBOX_PIN=<pin>\nTIMEBOX_LATLON=<lat>,<lon>\n' > ~/.config/timebox/env
 chmod 600 ~/.config/timebox/env
 
 # App + venv into ~/.local/share/timebox
@@ -157,6 +158,38 @@ All keys (each optional):
 | `fade`         | tunnel per-ring brightness decay toward the center, 0…1; switchable while running | `0.92` |
 | `bands`        | tunnel analyzer width, 2…60; switchable while running | `60` |
 | `stereo`       | analyze L/R separately: bars mirror bottom (L) / top (R) at half height, tunnel splits into semicircles with the same frequency diametrically opposite; switchable while running | `false` |
+| `clock`        | pin the sub-views the box's clock cycles through: list from `"time"`, `"weather"`, `"temp"`, `"date"`, e.g. `{"clock": ["time","weather"]}`; each is a full-screen page (weather: an animated scene) shown ~15 s in turn; replayed whenever the daemon restores the clock | `TIMEBOX_CLOCK` env, or `time,weather` |
+| `clock_color`  | clock color `[r,g,b]` (only with `clock`)  | white              |
+| `clock_flash`  | seconds the clock interrupts a running visualizer per flash; `0` = never | `30` |
+| `clock_every`  | seconds between clock flashes (also the weather re-push cadence); applies from the next cycle | `600` |
+
+## Weather on the clock
+
+The box's built-in clock/weather display expects the Divoom phone app to
+feed it — without one it shows stale data forever. With
+`TIMEBOX_LATLON=<lat>,<lon>` set, the daemon takes over: it fetches the
+current temperature and conditions every 30 minutes from
+[Bright Sky](https://brightsky.dev) (a free, keyless JSON API for DWD
+open data) and re-pushes them to the box every `clock_every` seconds.
+Leave the variable unset to skip the weather fetch.
+
+The idle panel shows the box's clock channel. Its enabled sub-views are
+full-screen pages the box cycles through (~15 s each): plain time, an
+*animated* weather scene, temperature, date — the firmware cannot merge
+them onto one page. Pick pages with the `clock` key, e.g.
+`echo '{"clock": ["time","weather"]}' > $XDG_RUNTIME_DIR/timebox.fifo`,
+or set the boot default with `TIMEBOX_CLOCK=time,weather` in the env
+file (a plain `TIMEBOX_CLOCK=time` means a steady, never-cycling
+clock).
+While the visualizer runs, the clock still gets air time: `clock_flash`
+seconds every `clock_every` seconds (default 30 s every 10 min, `0`
+disables), after which the spectrum takes the panel back.
+
+The daemon also keeps the box from wandering: it sets the box's startup
+channel to the clock (persistent, so a power-cycled box boots into the
+clock instead of its demo carousel) and re-asserts the clock on an idle
+panel every `clock_every` seconds — a channel switched via the box's
+hardware button finds its way back within one cycle.
 
 ## KDE notifications on the box
 

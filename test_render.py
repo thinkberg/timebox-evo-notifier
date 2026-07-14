@@ -12,6 +12,8 @@ from timebox_bridge import CLOSED_BY_CALL, CLOSED_DISMISSED, CLOSED_EXPIRED, Unr
 from timebox_daemon import (
     _RINGS,
     _bar_frame_stereo,
+    _bs_to_box,
+    _clock_payload,
     _frame_heights,
     _tunnel,
     _tunnel_frame,
@@ -160,6 +162,31 @@ for k in range(8):
     frame = _tunnel_frame([(i * 7 + k * 5) % 17 for i in range(60)])
 assert (len(_safe_encode_image(frame)) + 137) // 138 <= 6
 _tunnel["hist"].clear()
+
+# Weather: condition names precipitation and beats the cloud-cover icon;
+# a dry (or missing) condition falls back to it; unknowns read as cloudy.
+assert _bs_to_box("thunderstorm", "clear-day") == 5
+assert _bs_to_box("snow", None) == 8 == _bs_to_box("sleet", None) == _bs_to_box("hail", None)
+assert _bs_to_box("rain", "cloudy") == 6
+assert _bs_to_box("fog", None) == 9
+assert _bs_to_box("dry", "clear-night") == 1
+assert _bs_to_box(None, "partly-cloudy-day") == 3
+assert _bs_to_box("dry", None) == 3
+# The 5F payload carries °C as a signed byte.
+assert bytes([0x5F, -3 & 0xFF, 6]) == b"\x5f\xfd\x06"
+
+# Clock sub-views: 45 00 01 layout (node-divoom-timebox-evo), fullscreen
+# face, flags in time/weather/temp/date order, then the color.
+assert _clock_payload(["time", "weather"], (255, 0, 0)) == bytes(
+    [0x45, 0x00, 0x01, 0x00, 1, 1, 0, 0, 255, 0, 0])
+p = parse_params({"clock": ["date", "bogus", "time"], "clock_color": [0, 300, -5]})
+assert p["clock"] == ["date", "time"] and p["clock_color"] == (0, 255, 0)
+assert parse_params({"clock": "junk"})["clock"] == ["time"]  # chars, none valid
+assert parse_params({"clock": 5})["clock"] == ["time"]  # not iterable
+p = parse_params({"clock_flash": 999, "clock_every": 5})
+assert p["clock_flash"] == 300 and p["clock_every"] == 60  # clamped
+assert parse_params({"clock_flash": 0})["clock_flash"] == 0  # 0 = off, valid
+assert "clock_flash" not in parse_params({"clock_flash": "junk"})
 
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a

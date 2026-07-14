@@ -1,0 +1,80 @@
+TECHNICAL MEMORANDUM                                         TBX-26-007
+
+SUBJECT:      The clock channel decoded - page cycling, command layout,
+              and reading the box's mind with 0x46 state dumps
+DATE:         2026-07-14
+STATUS:       FINAL - every claim below verified against the panel by
+              state-dump readback
+
+
+SUMMARY. What looked like a stuck "demo mode" - the idle panel jumping
+through animated pages - was the clock channel doing exactly what it
+was told. Each enabled sub-view (time, weather, temperature, date) is
+a separate FULL-SCREEN page the box rotates every ~15 seconds, and the
+weather page is an animated scene; enabling "clock and weather" buys
+the carousel, the firmware cannot merge pages. Chasing this produced a
+partial decode of the 0x46 state dump, settled which of two
+conflicting community layouts of the clock command this firmware
+speaks, and caught two traps: the bare channel switch RESETS the
+stored sub-views, and a silently-swallowed exception in our own
+restore path sent the investigation down two wrong theories before the
+journal revealed the operator had simply changed the setting.
+
+1. THE 0x46 STATE DUMP. Sending opcode 0x46 returns a state frame the
+library leaves undecoded. Diffing dumps across known writes mapped
+enough of it to be useful (16x16 Evo, firmware as of 2026-07):
+
+    01 1900 04 46 55 CH .. .. .. .. BR .. .. .. .. RR GG BB
+                                          ?? T W P D SUM .. 02
+
+    CH   channel (00 clock, 02 cloud - matches the 45 arguments)
+    BR   brightness (0x50 = 80)
+    RGB  clock color
+    T W P D   sub-view flags: time, weather, temp, date
+    ??/..     unmapped; SUM moves with content (checksum)
+
+The dump answers "what does the box THINK it is showing" - ground
+truth no amount of staring at the panel provides. Acks observed: a 45
+write returns `45 55 00` plus an unsolicited `31 55 ...` notification.
+
+2. CLOCK COMMAND LAYOUT. Two community sources disagree on the clock
+channel switch. State readback settles it for this firmware:
+
+    45 00 01 FACE T W P D RR GG BB      <- correct (node-divoom layout)
+    45 00    FACE T W P D RR GG BB      <- MISPARSES here
+
+Writing time+weather/white via the first form lands exactly [T=1 W=1]
+with a clean white color. The second form shifts everything by one:
+color read back corrupted (ffff7f), flags scrambled. And the bare
+2-byte `45 00` is NOT "switch and keep settings": it RESETS the stored
+sub-view flags (observed landing on time-only once and all-zero
+another time). The daemon therefore always sends the full 11-byte form
+with explicit flags, never the bare switch.
+
+3. WHAT PERSISTS. The sub-view flags survive BLE disconnect, reconnect
+and box power (NV-stored); a 5F weather-data push does NOT flip the
+weather flag on. The boot channel is set by `8A 01 <channel>` (also
+NV) - pinning it to 00 stops the out-of-box demo carousel after a
+power cycle. Weather data itself is lost on power-off, which is why
+the daemon re-pushes 5F every cycle rather than only on fetch.
+
+4. THE INVESTIGATION, AND WHERE IT WENT WRONG. Three theories fell in
+sequence: (a) "the weather sub-view is the demo" - refuted when
+time-only was set and the operator still saw cycling; (b) "the box
+reverts flags on disconnect" - refuted by a write/disconnect/reconnect
+probe; (c) the truth, found in the journal: a FIFO request had
+re-enabled time+weather between our write and the observation, and the
+pages were cycling as configured. Two of our own defects stretched
+this hunt: the restore helper swallowed every exception silently, so
+"the daemon set time-only at startup" was an assumption, not a fact
+(TBX-26-004 again - a silent failure path is an unverified outcome);
+and the in-memory clock choice was reset by every daemon restart,
+which the operator correctly reported as "does not stick" (now a
+TIMEBOX_CLOCK env default).
+
+5. DISPOSITION. The daemon speaks the verified 11-byte clock command
+exclusively, defaults its pages from TIMEBOX_CLOCK (falling back to
+time,weather), and re-asserts them on every restore. The probe
+scripts' method - write, read the state dump back, diff - is the
+standard for any future opcode work: the panel shows you a picture,
+but 0x46 tells you the state.

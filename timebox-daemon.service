@@ -2,7 +2,9 @@
 Description=TimeBox Evo notification daemon
 
 [Service]
-# TIMEBOX_ADDRESS (required) and TIMEBOX_PIN (if your box asks) live here:
+# TIMEBOX_ADDRESS (required), TIMEBOX_PIN (if your box asks),
+# TIMEBOX_LATLON (optional, weather on the box's clock) and
+# TIMEBOX_CLOCK (optional, default clock pages) live here:
 EnvironmentFile=%h/.config/timebox/env
 WorkingDirectory=%h/.local/share/timebox
 ExecStart=%h/.local/share/timebox/.venv/bin/python timebox_daemon.py

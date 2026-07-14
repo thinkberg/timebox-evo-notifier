@@ -22,6 +22,15 @@ in border px/frame; negative reverses, 0 stops), fade (per-ring decay,
 0-1), bands (analyzer width, 2-60). stereo true analyzes L/R apart:
 bars mirror bottom (L) / top (R) at half height, the tunnel splits
 into left/right semicircles. All switchable while running.
+clock ["time","weather","temp","date"] pins which sub-views the box's
+clock cycles through (clock_color sets its color); shown immediately
+when idle, and replayed whenever the daemon restores the clock.
+Each view is a full-screen page the box cycles through (~15 s each);
+the weather page is an animated scene. Default from TIMEBOX_CLOCK
+(comma-separated), falling back to time,weather.
+clock_flash/clock_every (seconds) let the clock interrupt a running
+visualizer: flash seconds of clock every every seconds (defaults 30
+and 600; flash 0 turns it off).
 Notifications arriving while it runs are
 rendered on top of the frame over an opaque background band.
 
@@ -38,6 +47,7 @@ import os
 import signal
 import stat
 import subprocess
+import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -180,6 +190,23 @@ def parse_params(raw: dict) -> dict:
             pass
     if "stereo" in raw:
         p["stereo"] = bool(raw["stereo"])
+    if "clock" in raw:
+        try:
+            views = [v for v in raw["clock"] if v in _CLOCK_VIEWS]
+        except TypeError:
+            views = []
+        p["clock"] = views or ["time"]  # a clock with nothing on it helps nobody
+        p["clock_color"] = _color(raw, "clock_color", (255, 255, 255))
+    if "clock_flash" in raw:
+        try:  # seconds the clock interrupts a running visualizer; 0 = never
+            p["clock_flash"] = min(300, max(0, int(raw["clock_flash"])))
+        except Exception:
+            pass
+    if "clock_every" in raw:
+        try:  # seconds between those interruptions (and weather re-pushes)
+            p["clock_every"] = min(3600, max(60, int(raw["clock_every"])))
+        except Exception:
+            pass
     return p
 
 
@@ -410,9 +437,11 @@ class StaticOverlay:
 
 
 # Visualizer state: the running task, the overlay stamped on each frame,
-# and the render knobs — all switchable while running.
+# the render knobs — all switchable while running — and flash_until, the
+# loop-clock deadline until which the clock owns the panel (weather_loop).
 _vis: dict = {"task": None, "overlay": None, "mode": "bars", "stereo": False,
-              "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE, "bands": len(_RINGS[0])}
+              "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE,
+              "bands": len(_RINGS[0]), "flash_until": 0.0}
 
 
 def _sink_running() -> bool:
@@ -439,12 +468,38 @@ def _sink_running() -> bool:
     return False
 
 
-async def _blank_panel(client) -> None:
+def _clock_payload(views: list[str], color: RGB) -> bytes:
+    """Clock-channel switch pinning its sub-views (45 00 01 layout, per
+    node-divoom-timebox-evo, state-dump-verified against this firmware);
+    the face stays fullscreen."""
+    flags = [v in views for v in ("time", "weather", "temp", "date")]
+    return bytes([0x45, 0x00, 0x01, 0x00, *flags, *color])
+
+
+# The clock command replayed on every restore ({"clock": [...]} swaps it).
+# Always explicit flags — the bare 45 00 RESETS the box's stored sub-views
+# (probed via 0x46 state dumps). Each enabled view is a full-screen page
+# the box cycles through (~15 s); the weather page is an animated scene.
+# TIMEBOX_CLOCK ("time,weather") sets the boot default so it survives
+# daemon restarts; the FIFO key changes it live.
+_CLOCK_VIEWS = ("time", "weather", "temp", "date")
+_clock: dict = {"payload": _clock_payload(
+    [v for v in os.environ.get("TIMEBOX_CLOCK", "time,weather").split(",")
+     if v in _CLOCK_VIEWS] or ["time"],
+    (255, 255, 255))}
+
+
+async def _restore_clock(client) -> None:
+    """Hand the panel back to the clock (paused, stopped, capture lost).
+
+    Bounded (TBX-26-006): a wedged write here would park the task for good.
+    """
     if client is None:
         return
     try:
         async with _panel_lock:
-            await client.static_image(_bar_frame([0] * VIS_BANDS))
+            await asyncio.wait_for(
+                client.send_raw_payload(_clock["payload"]), 5)
     except Exception:
         pass  # a dead panel must not stop the audio wait
 
@@ -488,7 +543,7 @@ async def visualize(params: dict) -> None:
                     waiting = True
                     print("visualizer: audio idle — capture paused", flush=True)
                     _tunnel["hist"].clear()  # stale history; restart fresh
-                    await _blank_panel(client)
+                    await _restore_clock(client)
                 # Overlays are normally stamped onto capture frames; keep
                 # notifications visible while paused.
                 if _vis["overlay"] is not None:
@@ -500,7 +555,7 @@ async def visualize(params: dict) -> None:
                         pass  # panel trouble must not stop the audio wait
                     await asyncio.sleep(1 / VIS_FPS)
                     if _vis["overlay"] is None:  # that was its last frame
-                        await _blank_panel(client)
+                        await _restore_clock(client)
                 else:
                     await asyncio.sleep(2)
                 continue
@@ -548,6 +603,12 @@ async def visualize(params: dict) -> None:
                             # way. Track corked state via pactl if it bites.
                             quiet = 0
                             break
+                    # Clock flash: the clock owns the panel; keep draining
+                    # audio, skip the writes. A notification overrides it.
+                    if (_vis["overlay"] is None and
+                            asyncio.get_running_loop().time()
+                            < _vis["flash_until"]):
+                        continue
                     # One read per frame: a live mode/stereo switch during
                     # the to_thread await must not mismatch heights/renderer.
                     mode, stereo = _vis["mode"], _vis["stereo"]
@@ -584,7 +645,7 @@ async def visualize(params: dict) -> None:
                     print("visualizer: audio capture ended — waiting for audio",
                           flush=True)
                     _tunnel["hist"].clear()  # stale history; restart fresh
-                    await _blank_panel(client)
+                    await _restore_clock(client)
                 await asyncio.sleep(2)
             finally:
                 if proc is not None:
@@ -603,17 +664,99 @@ async def visualize(params: dict) -> None:
                     await proc.wait()
     finally:
         _vis["overlay"] = None
-        # The box keeps displaying the last pushed frame forever; hand the
-        # panel back to the clock. Bounded (TBX-26-006): a wedged write in
-        # this finally would park the cancelled task for good.
-        client = _le["client"]
-        if client is not None:
-            try:
-                async with _panel_lock:
-                    await asyncio.wait_for(client.clock(), 5)
-            except Exception:
-                pass  # box unreachable — nothing to hand back to
+        # The box keeps displaying the last pushed frame forever.
+        await _restore_clock(_le["client"])
         print("visualizer stopped", flush=True)
+
+
+# --- weather --------------------------------------------------------------------
+
+# The box's clock/weather display expects a phone app to feed it data; here
+# the daemon does that job with DWD data via Bright Sky (free, keyless JSON
+# front for DWD open data). Needs TIMEBOX_LATLON="lat,lon" in the env file.
+WEATHER_EVERY = 30 * 60  # seconds between forecast fetches
+# Clock air time while the visualizer holds the panel: every `every`
+# seconds the clock shows for `flash` seconds. FIFO keys clock_every /
+# clock_flash (0 = never); changes apply from the next cycle.
+_weather = {"every": 10 * 60, "flash": 30}
+
+# Divoom icon bytes for the 5F push: 1 clear, 3 cloudy, 5 thunderstorm,
+# 6 rain, 8 snow, 9 fog.
+_BS_CONDITION = {"thunderstorm": 5, "snow": 8, "sleet": 8, "hail": 8,
+                 "rain": 6, "fog": 9}
+
+
+def _bs_to_box(condition: str | None, icon: str | None) -> int:
+    """Bright Sky condition/icon -> Divoom weather icon byte. The condition
+    names precipitation; a dry sky falls back to the cloud-cover icon."""
+    if condition in _BS_CONDITION:
+        return _BS_CONDITION[condition]
+    return 1 if icon in ("clear-day", "clear-night") else 3
+
+
+def _fetch_weather(latlon: str) -> tuple[int, int]:
+    """(temperature °C, Divoom icon) for "lat,lon", from DWD via Bright Sky."""
+    lat, lon = (float(c) for c in latlon.split(","))
+    with urllib.request.urlopen(
+        f"https://api.brightsky.dev/current_weather?lat={lat}&lon={lon}",
+        timeout=15,
+    ) as resp:
+        weather = json.load(resp)["weather"]
+    return round(weather["temperature"]), _bs_to_box(
+        weather.get("condition"), weather.get("icon"))
+
+
+async def weather_loop() -> None:
+    """Keep the box's weather current and give the clock its air time.
+
+    Every _weather["every"] seconds: re-push temperature/condition
+    (re-pushing covers a power-cycled box that lost them) and, if the
+    visualizer holds the panel, show the clock for _weather["flash"]
+    seconds — the visualizer skips its writes for that window and simply
+    repaints afterwards. The idle panel shows the clock anyway. Redialing
+    via ensure_le() doubles as the idle daemon's link self-healing.
+    """
+    latlon = os.environ.get("TIMEBOX_LATLON")
+    if not latlon:
+        print("weather: TIMEBOX_LATLON not set — box weather stays stale",
+              flush=True)
+    weather = None
+    age = WEATHER_EVERY  # stale from the start: fetch on the first pass
+    while True:
+        if latlon and age >= WEATHER_EVERY:
+            try:
+                weather = await asyncio.to_thread(_fetch_weather, latlon)
+                age = 0
+                print(f"weather: {weather[0]}°C icon {weather[1]}",
+                      flush=True)
+            except Exception as exc:
+                print(f"weather: fetch failed ({exc}) — retrying later",
+                      flush=True)
+        try:
+            client = await ensure_le()
+            if weather is not None:
+                temp, icon = weather
+                async with _panel_lock:
+                    await asyncio.wait_for(client.send_raw_payload(
+                        bytes([0x5F, temp & 0xFF, icon])), 5)
+            vis_running = _vis["task"] is not None and not _vis["task"].done()
+            if vis_running and _weather["flash"] > 0:
+                _vis["flash_until"] = (asyncio.get_running_loop().time()
+                                       + _weather["flash"])
+                await _restore_clock(client)
+                print(f"clock flash ({_weather['flash']}s)", flush=True)
+            elif not vis_running:
+                # Idle: re-assert the clock. The box's hardware button and
+                # its demo carousel after an app-less power-up both wander
+                # off-channel; this herds it back within one cycle.
+                await _restore_clock(client)
+        except (BleakError, asyncio.TimeoutError) as exc:
+            print(f"weather: push failed ({exc})", flush=True)
+            await drop_le()
+        except Exception as exc:
+            print(f"weather: LE unavailable ({exc})", flush=True)
+        await asyncio.sleep(_weather["every"])
+        age += _weather["every"]
 
 
 # --- sound ----------------------------------------------------------------------
@@ -675,6 +818,25 @@ async def handle(client, params: dict) -> None:
             await client.set_brightness(params["brightness"])
 
     vis_running = _vis["task"] is not None and not _vis["task"].done()
+
+    if any(k in params for k in ("clock", "clock_flash", "clock_every")):
+        changed = []
+        if "clock" in params:
+            _clock["payload"] = _clock_payload(params["clock"],
+                                               params["clock_color"])
+            if not vis_running:  # otherwise the next frame repaints anyway;
+                async with _panel_lock:  # the payload shows on restore
+                    await asyncio.wait_for(
+                        client.send_raw_payload(_clock["payload"]), 5)
+            changed.append(f"views: {', '.join(params['clock'])}")
+        if "clock_flash" in params:
+            _weather["flash"] = params["clock_flash"]
+            changed.append(f"flash: {params['clock_flash']}s")
+        if "clock_every" in params:
+            _weather["every"] = params["clock_every"]
+            changed.append(f"every: {params['clock_every']}s")
+        print(f"clock {'; '.join(changed)}", flush=True)
+        return
 
     if "visualizer" in params:
         if params["visualizer"] and not vis_running:
@@ -775,6 +937,8 @@ async def main() -> None:
     agent_bus = await start_agent(DEFAULT_ADDRESS)
     client = await ensure_le()
     await client.set_brightness(80)
+    # Persistent on the box: boot into the clock, not the demo carousel.
+    await client.set_startup_channel(0)
     print("LE control connected", flush=True)
 
     # Serve requests as soon as the display works. Audio bring-up can take a
@@ -783,6 +947,7 @@ async def main() -> None:
     path = fifo_path()
     print(f"listening on {path}", flush=True)
     _spawn(initial_audio(), "audio bring-up")
+    _spawn(weather_loop(), "weather")
 
     # ponytail: reconnect-on-demand; add a keepalive task if first-notify
     # latency after long idle turns out to bother.
