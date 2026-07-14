@@ -14,7 +14,8 @@ envelope icon; fps sets scroll speed), count, icon_color [r,g,b],
 number_color [r,g,b], background [r,g,b], brightness 0-100,
 sound <path>, silent true/false. visualizer true streams a 16-band
 spectrum of the system audio (endless — capturing only while audio
-plays — or `seconds` if given); visualizer false stops it. mode picks
+plays — or `seconds` if given); visualizer false stops it and hands
+the panel back to the clock. mode picks
 the look: "bars" (default) or "tunnel" — concentric spectrum rings
 flowing inward, colors fading with age. Tunnel knobs: spin (rotation
 in border px/frame; negative reverses, 0 stops), fade (per-ring decay,
@@ -602,6 +603,16 @@ async def visualize(params: dict) -> None:
                     await proc.wait()
     finally:
         _vis["overlay"] = None
+        # The box keeps displaying the last pushed frame forever; hand the
+        # panel back to the clock. Bounded (TBX-26-006): a wedged write in
+        # this finally would park the cancelled task for good.
+        client = _le["client"]
+        if client is not None:
+            try:
+                async with _panel_lock:
+                    await asyncio.wait_for(client.clock(), 5)
+            except Exception:
+                pass  # box unreachable — nothing to hand back to
         print("visualizer stopped", flush=True)
 
 
