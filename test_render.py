@@ -15,6 +15,7 @@ from timebox_daemon import (
     _bs_to_box,
     _clock_payload,
     _frame_heights,
+    _is_frame_ack,
     _tunnel,
     _tunnel_frame,
     _tunnel_frame_stereo,
@@ -187,6 +188,13 @@ p = parse_params({"clock_flash": 999, "clock_every": 5})
 assert p["clock_flash"] == 300 and p["clock_every"] == 60  # clamped
 assert parse_params({"clock_flash": 0})["clock_flash"] == 0  # 0 = off, valid
 assert "clock_flash" not in parse_params({"clock_flash": "junk"})
+
+# Frame-ack pacing: recognize the box's 0x44 image ack among the other
+# notification frames (bytes as captured live from this firmware).
+assert _is_frame_ack(bytes.fromhex("010600044455 4ef10002".replace(" ", "")))
+assert not _is_frame_ack(bytes.fromhex("01090004 3355 220000 00b70002".replace(" ", "")))  # chunk echo
+assert not _is_frame_ack(bytes.fromhex("010d0004 f755 4e6f6202 070400008902 02".replace(" ", "")))  # heartbeat
+assert not _is_frame_ack(b"")  # short frame must not match
 
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a

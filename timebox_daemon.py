@@ -511,6 +511,31 @@ def _apply_overlay(frame: list[RGB]) -> list[RGB]:
     return frame
 
 
+def _is_frame_ack(n: bytes) -> bool:
+    """The box acks every 0x44 image write: 01 <len16> 04 44 55 ..."""
+    return n[3:6] == b"\x04\x44\x55"
+
+
+async def _push_frame(client, frame: list[RGB]) -> None:
+    """Panel write paced by the box's ack. Write-without-response returns
+    when bluezd queues the chunks, not when the radio sends them — a recipe
+    fatter than the link (~60 chunks/s measured) would otherwise pile
+    unbounded lag into bluez's queue. Waiting for the ack caps that queue
+    at one frame; the newest-audio drain upstream turns the wait into
+    skipped frames, so overload degrades to lower fps, not growing lag.
+    """
+    loop = asyncio.get_running_loop()
+    async with _panel_lock:
+        client.clear_notifications()
+        await client.static_image(frame)
+        deadline = loop.time() + 2  # a lost ack must not wedge the stream
+        while loop.time() < deadline:
+            if any(_is_frame_ack(n) for n in client.drain_notifications()):
+                return
+            await asyncio.sleep(0.01)
+    print("visualizer: no frame ack in 2s — link congested?", flush=True)
+
+
 async def visualize(params: dict) -> None:
     """Stream a 16-band spectrum of the system audio (default sink monitor).
 
@@ -548,9 +573,8 @@ async def visualize(params: dict) -> None:
                 # notifications visible while paused.
                 if _vis["overlay"] is not None:
                     try:
-                        async with _panel_lock:
-                            await client.static_image(
-                                _apply_overlay(_bar_frame([0] * VIS_BANDS)))
+                        await _push_frame(
+                            client, _apply_overlay(_bar_frame([0] * VIS_BANDS)))
                     except Exception:
                         pass  # panel trouble must not stop the audio wait
                     await asyncio.sleep(1 / VIS_FPS)
@@ -623,8 +647,7 @@ async def visualize(params: dict) -> None:
                     else:
                         frame = (_bar_frame_stereo(*heights) if stereo
                                  else _bar_frame(heights))
-                    async with _panel_lock:
-                        await client.static_image(_apply_overlay(frame))
+                    await _push_frame(client, _apply_overlay(frame))
                     sent += 1
             except BleakError as exc:
                 if total is not None:

@@ -127,6 +127,10 @@ echo '{"visualizer": true, "mode": "bars", "stereo": true}' > $FIFO
 # Nudge a single knob while it runs — everything else stays as it is
 echo '{"visualizer": true, "spin": 1}' > $FIFO
 
+# Frame pacing follows the BLE link: colorful recipes (many bands + stereo)
+# make bigger frames, and when they exceed what the radio carries (~60
+# chunks/s) the visualizer drops frames instead of falling behind the music.
+
 # Notifications sent while the visualizer runs are drawn on top of the
 # bars, over an opaque band, so they stay legible.
 ```

@@ -1,0 +1,88 @@
+TECHNICAL MEMORANDUM                                         TBX-26-008
+
+SUBJECT:      The invisible BLE write queue - why fat visualizer frames
+              lagged the music, and pacing by the box's own acks
+DATE:         2026-07-15
+STATUS:       FINAL - queue depth and link capacity measured live;
+              fix verified against the panel under worst-case load
+
+
+SUMMARY. The 30-band stereo tunnel fell progressively behind the music
+- about one second of extra lag for every eight seconds played - while
+the daemon's own backlog drain (TBX-26-005) reported nothing wrong.
+The lag was real but lived BELOW the daemon: image chunks go out as
+BLE write-without-response, which "completes" the moment bluezd queues
+the bytes, not when the radio sends them. Any recipe producing more
+chunks per second than the link carries piles the difference into an
+unbounded queue inside bluezd that no daemon-side check can see. The
+box turns out to acknowledge every image write with a notification;
+the visualizer now waits for that ack before rendering the next frame,
+which caps the queue at one frame and turns overload into dropped
+frames instead of growing lag.
+
+1. THE SYMPTOM, AND WHY THE DRAIN MISSED IT. TBX-26-005 added a
+capture-side drain: before each render, skip to the newest audio frame
+so slow BLE writes cost frames, not latency. That logic is correct and
+was working. But it bounds only the AUDIO side of the pipeline. The
+write side looked instant - static_image() returned in ~2 ms - because
+bleak on BlueZ maps write-without-response to a D-Bus WriteValue of
+type "command": bluezd accepts the bytes immediately and transmits
+them whenever the connection interval allows. Produce faster than the
+radio drains and the excess queues silently, growing without bound,
+while every daemon-side measure of "how far behind am I" reads zero.
+
+2. MEASURING THE QUEUE. Two numbers settle it. Handing 50 worst-case
+frames (350 chunks of <=138 bytes) to bluezd took 0.08 seconds; a
+write-with-response barrier queued behind them - ATT is ordered, so
+its response returns only after everything ahead has been transmitted
+- came back after 5.64 seconds. A 70x gap between "sent" and "sent".
+That flush time gives the sustained link capacity: ~62 chunks/second
+on this box. Against the recipes:
+
+    default bars  (16 bands, mono)    ~5 chunks/frame    51 chunks/s
+    tunnel stereo (15 bands)          ~6 chunks/frame    60 chunks/s
+    tunnel stereo (30 bands)          ~7 chunks/frame    70 chunks/s
+
+The image payload is palette + indexed pixels, so chunk count follows
+COLOR DIVERSITY, not band count directly: stereo doubles the distinct
+(hue, brightness) pairs per ring, and 30 bands ran ~74 colors per
+frame against ~40 for the default. At 10 fps that is 70 chunks/s into
+a 62 chunks/s pipe - the operator's report ("backlog over time")
+reproduced exactly, at roughly +1 s of lag per 8 s of music. Note how
+close the 15-band stereo recipe sits to the ceiling: it merely
+happened to work.
+
+3. THE BOX ACKS EVERY FRAME. The notification stream (buffered but
+undecoded by the library) has a fixed shape on this firmware:
+
+    01 <len16> 04 <cmd> 55 <body...>
+
+with cmd echoing the opcode being answered: 44 after every image
+write, 45 after a channel switch, 33 once per received chunk, f7
+heartbeats. Pushing five frames at 10 fps returned five cmd=44 acks,
+one per frame, arriving only after the box had the whole frame. That
+is a flow-control signal for free: no extra writes, no timers, paced
+by the actual radio.
+
+4. THE FIX. _push_frame() wraps the panel write: send the frame, then
+wait for a cmd=44 ack before returning, bounded at 2 seconds so a
+lost notification cannot wedge the stream (TBX-26-006: every await on
+an external stack is bounded), with a log line on timeout rather than
+silence (TBX-26-004). The capture drain upstream does the rest: while
+one frame waits for its ack, arriving audio piles into the reader and
+the next iteration skips to the newest frame. Net behavior: recipes
+within capacity run at full 10 fps (the ack returns inside the frame
+budget); recipes beyond it self-pace to what the link carries (~9 fps
+for the 30-band stereo tunnel) holding a constant one-frame latency.
+The queue cannot grow because frame N+1 is not even rendered until
+frame N is out of the radio.
+
+5. DISPOSITION. Fixed in timebox_daemon.py (_is_frame_ack,
+_push_frame; both static_image call sites in the visualizer route
+through it), ack recognition pinned by checks against live-captured
+notification bytes, README notes the capacity ceiling next to the
+recipes. The general lesson pairs with TBX-26-005: bounding one side
+of a pipeline is not bounding the pipeline. Every fire-and-forget
+boundary hides a queue, and the only trustworthy backpressure comes
+from the far end - here, literally waiting for the box to say "got
+it" before drawing the next picture.
