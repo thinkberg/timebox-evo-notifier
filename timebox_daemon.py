@@ -533,7 +533,11 @@ async def _push_frame(client, frame: list[RGB]) -> None:
             if any(_is_frame_ack(n) for n in client.drain_notifications()):
                 return
             await asyncio.sleep(0.01)
-    print("visualizer: no frame ack in 2s — link congested?", flush=True)
+    # A healthy link acks within ~150 ms; 2 s of silence has only ever meant
+    # the box killed the link (its ~39-min quirk) while bluezd still accepts
+    # writes into the void. Raising here hands the endless visualizer to its
+    # reconnect path now, instead of freezing until BlueZ notices (~30 s).
+    raise BleakError("no frame ack in 2s")
 
 
 async def visualize(params: dict) -> None:

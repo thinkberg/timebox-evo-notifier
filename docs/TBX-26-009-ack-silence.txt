@@ -1,0 +1,69 @@
+TECHNICAL MEMORANDUM                                         TBX-26-009
+
+SUBJECT:      Ack silence means the link is dead - failing over in two
+              seconds instead of freezing through the zombie window
+DATE:         2026-07-16
+STATUS:       FINAL - diagnosed from three identical journal episodes;
+              fix deployed, proves itself on every box-side link drop
+
+
+SUMMARY. Days after the ack-paced frame pushes shipped (TBX-26-008),
+the operator reported the visualizer occasionally freezing while "a
+short other display" appeared - suspected to be a notification. It was
+neither a notification nor a regression in the pacing itself: the box
+drops its BLE link on its own roughly every 39 minutes, and for about
+30 seconds afterwards BlueZ keeps accepting writes into the dead
+connection before it notices. The ack pacing turned that window into
+fourteen consecutive 2-second timeouts, each patiently logged, while
+the panel sat frozen and the box fell back to its own clock pages.
+The journal shows ack silence has exactly one cause here, so the fix
+is one line of policy: the first missed ack now raises, handing the
+stream to the existing reconnect path within ~2 seconds.
+
+1. DECODING THE SYMPTOM. Three episodes since the TBX-26-008 deploy,
+byte-for-byte alike in the journal: about fourteen "no frame ack in
+2s" lines two seconds apart, then the frame write itself failing with
+"Service Discovery has not been performed yet" (bleak's way of saying
+the disconnect event finally landed), then a clean redial some five
+seconds later. Total outage ~35 seconds. The "short other display" is
+the box itself: once its link dies it falls back to its current
+channel - the clock, whose page cycle includes the animated weather
+scene - and the ~3-second init handshake on reconnect keeps it there
+a moment longer before the next frame repaints the tunnel.
+
+2. THE 39-MINUTE CADENCE. The idle log settles the cause: the box has
+been dropping the LE link on a ~39-minute rhythm for days, music or
+no music - each weather-loop pass finds the link gone and redials.
+This is firmware behavior, not load; nothing the daemon sends provokes
+it and nothing it sends can prevent it. The only lever is how fast the
+daemon notices.
+
+3. THE ZOMBIE WINDOW. The box kills its side without anything reaching
+BlueZ, and until the kernel declares the connection dead (~30 s),
+write-without-response keeps "succeeding" into the void. TBX-26-008
+established that acks normally return within ~150 ms even with the
+link saturated. The old fire-and-forget code streamed invisibly into
+this window (panel frozen either way); the ack-paced code made the
+daemon WAIT through it, two seconds per frame, holding the panel lock
+- politely logging a warning per frame and carrying on. Thirty-plus
+hours of journal contain 42 such warnings, every single one part of a
+death storm, zero singletons: a lost-but-harmless ack has never been
+observed in paced operation.
+
+4. THE FIX. _push_frame() now raises BleakError("no frame ack in 2s")
+where it previously logged and returned. The endless visualizer's
+except-BleakError path - already proven by every prior link loss -
+drops the client and redials, and connect_le's kick actively
+terminates the box's zombie side rather than waiting out the kernel.
+Outage per drop shrinks from ~35 s to ~5-9 s. Timed runs die on the
+same raise, consistent with their existing policy of not overrunning
+the window. Journal signature of a handled drop: "panel write failed
+(no frame ack in 2s) - reconnecting", then "LE reconnected".
+
+5. DISPOSITION. Fixed in timebox_daemon.py (one raise in _push_frame);
+verified streaming clean after deploy under worst-case broadband
+noise; the failover re-verifies itself on the box's next 39-minute
+drop. The lesson refines TBX-26-008: the ack is the link's heartbeat,
+and its absence is as informative as its arrival. A timeout that is
+logged and walked past is a decision to stay wedged - when the data
+says the silence has exactly one cause, act on the first one.
