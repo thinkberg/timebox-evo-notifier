@@ -19,7 +19,11 @@ from timebox_daemon import (
     _tunnel,
     _tunnel_frame,
     _tunnel_frame_stereo,
+    _vis,
     _vis_freqs,
+    _wave,
+    _wave_frame,
+    _wave_frame_stereo,
     ScrollOverlay,
     StaticOverlay,
     parse_params,
@@ -156,6 +160,90 @@ for j in range(30):  # same frequency sits diametrically opposite
     assert frame[_RINGS[0][(8 + j) % 60]] == frame[_RINGS[0][(38 + j) % 60]]
 _tunnel["hist"].clear()
 
+# Wave: scrolling spectrogram. The newest spectrum enters at the right edge
+# (dir h) / top row (dir v), band 0 at the bottom/left; history reaches the
+# far edge after 16 frames, fading monotonically; silence renders black.
+assert parse_params({"mode": "wave"})["mode"] == "wave"
+assert parse_params({"dir": "v"})["dir"] == "v"
+assert "dir" not in parse_params({"dir": "x"})
+assert parse_params({"palette": "heat"})["palette"] == "heat"
+assert "palette" not in parse_params({"palette": "neon"})
+_vis["dir"], _vis["palette"] = "h", "rainbow"
+_wave["hist"].clear()
+frame = _wave_frame([16] * 16)
+assert all(frame[y * 16 + 15] != (0, 0, 0) for y in range(16))
+assert all(frame[y * 16 + x] == (0, 0, 0) for y in range(16) for x in range(15))
+lone = [0] * 16
+lone[0] = 16  # lowest band sits on the bottom row, like the bars
+_wave["hist"].clear()
+frame = _wave_frame(lone)
+assert frame[15 * 16 + 15] != (0, 0, 0)
+assert sum(c != (0, 0, 0) for c in frame) == 1
+_wave["hist"].clear()
+for _ in range(16):
+    frame = _wave_frame([16] * 16)
+assert frame[0] != (0, 0, 0)  # oldest column reached the left edge
+bright = [max(frame[x]) for x in range(15, -1, -1)]
+assert all(a >= b for a, b in zip(bright, bright[1:]))  # fade with age
+_vis["dir"] = "v"
+_wave["hist"].clear()
+frame = _wave_frame([16] * 16)
+assert all(frame[x] != (0, 0, 0) for x in range(16))  # newest = top row
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(1, 16) for x in range(16))
+_vis["dir"] = "h"
+_wave["hist"].clear()
+assert all(c == (0, 0, 0) for c in _wave_frame([0] * 16))
+
+# Stereo wave: newest columns at the middle (L at 7, R at 8), each side ages
+# outward and stays on its half; identical channels mirror around the middle;
+# dir v puts R on top / L below, like the stereo bars.
+_wave["hist"].clear()
+frame = _wave_frame_stereo([16] * 16, [0] * 16)
+assert all(frame[y * 16 + 7] != (0, 0, 0) for y in range(16))
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(16) for x in range(16) if x != 7)
+for _ in range(8):
+    frame = _wave_frame_stereo([16] * 16, [0] * 16)
+assert all(frame[y * 16] != (0, 0, 0) for y in range(16))  # left edge reached
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(16) for x in range(8, 16))  # right half stays dark
+_wave["hist"].clear()
+for _ in range(8):
+    frame = _wave_frame_stereo([16] * 16, [16] * 16)
+for y in range(16):
+    for x in range(8):
+        assert frame[y * 16 + x] == frame[y * 16 + (15 - x)]
+_vis["dir"] = "v"
+_wave["hist"].clear()
+frame = _wave_frame_stereo([0] * 16, [16] * 16)
+assert all(frame[7 * 16 + x] != (0, 0, 0) for x in range(16))  # R = row 7
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(16) for x in range(16) if y != 7)
+_vis["dir"] = "h"
+
+# Heat palette: loudness only — green quiet, red loud, black silent.
+_vis["palette"] = "heat"
+_wave["hist"].clear()
+frame = _wave_frame([2] * 8 + [16] * 8)
+green, red = frame[15 * 16 + 15], frame[15]
+assert green[1] > green[0] and red[0] > red[1]
+_wave["hist"].clear()
+assert all(c == (0, 0, 0) for c in _wave_frame([0] * 16))
+_vis["palette"] = "rainbow"
+
+# A live stereo toggle leaves the other shape in the history: rendering must
+# stop at the first mismatched entry, not crash.
+_wave["hist"].clear()
+_wave_frame([16] * 16)
+frame = _wave_frame_stereo([16] * 16, [16] * 16)
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(16) for x in range(16) if x not in (7, 8))
+frame = _wave_frame([16] * 16)
+assert all(frame[y * 16 + x] == (0, 0, 0)
+           for y in range(16) for x in range(15))
+_wave["hist"].clear()
+
 # Latency guard: even a worst-case dense tunnel frame must encode small —
 # unquantized frames hit 8 BLE image chunks, which made mode changes
 # feel sluggish (typical music frames: 5).
@@ -163,6 +251,10 @@ for k in range(8):
     frame = _tunnel_frame([(i * 7 + k * 5) % 17 for i in range(60)])
 assert (len(_safe_encode_image(frame)) + 137) // 138 <= 6
 _tunnel["hist"].clear()
+for k in range(16):  # same guard for a dense worst-case wave frame
+    frame = _wave_frame([(i * 7 + k * 5) % 17 for i in range(16)])
+assert (len(_safe_encode_image(frame)) + 137) // 138 <= 6
+_wave["hist"].clear()
 
 # Weather: condition names precipitation and beats the cloud-cover icon;
 # a dry (or missing) condition falls back to it; unknowns read as cloudy.

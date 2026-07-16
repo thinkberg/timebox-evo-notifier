@@ -1,0 +1,73 @@
+TECHNICAL MEMORANDUM                                         TBX-26-011
+
+SUBJECT:      Wave visualizer - scrolling 16-band spectrogram with
+              selectable axis, palette, and stereo center-out flow
+DATE:         2026-07-16
+STATUS:       FINAL - feature operational, validated on hardware
+
+
+SUMMARY. The visualizer gained a third mode: a wave. Each frame's 16
+band heights become one line of pixels; the history scrolls across
+the panel, dimming with age. The scroll axis is a knob: "h" enters at
+the right edge and drifts left (low bands at the bottom, like the
+bars), "v" enters at the top row and falls (low bands at the left).
+In stereo the two channels enter at the middle and age outward -
+left toward the left/bottom edge, right toward the right/top, the
+same L/R split as the stereo bars - halving the visible history to 8
+frames per side. Two palettes: "rainbow" (hue = band, brightness =
+level, the tunnel's color function) and "heat" (green quiet, yellow
+mid, red loud, the bars' palette read as intensity). Mode, dir, and
+palette are FIFO parameters, switchable while running. The mode is a
+structural clone of the tunnel (TBX-26-005): a history deque, pure
+frame functions, fade^age through the same 32-step quantizer, and
+the history cleared at every capture-gap site.
+
+1. DESIGN.
+
+   1.1 Geometry. A deque(maxlen=16) holds per-frame heights, newest
+   first. Mono paints entry `age` at column 15-age (dir h) or row
+   `age` (dir v). Stereo stores (L, R) tuples and paints L at column
+   7-age / row 8+age, R at column 8+age / row 7-age; entries past
+   age 7 fall off the panel. Analysis is unchanged bars machinery:
+   16 log-spaced Goertzel bands, rows=16 even in stereo (the value
+   is intensity, not bar height), shared auto-gain peak across
+   channels. The tunnel-only `bands` knob does not apply.
+
+   1.2 Color and fade. rainbow reuses _tunnel_color (hue = band,
+   brightness = sqrt(height/16), silence black); heat reuses
+   _bar_color on the height (black at 0). Position already names the
+   band, so heat trades the redundant hue for a loudness read. Aging
+   lines dim by fade^age (the existing knob, default 0.92; at age 15
+   that is ~0.29, still visible) through _q32, keeping a worst-case
+   dense frame within the 6-chunk BLE budget of TBX-26-008 - pinned
+   by the same runnable check as the tunnel.
+
+   1.3 Runtime knobs. mode gained "wave"; dir ("h"/"v") and palette
+   ("rainbow"/"heat") are new FIFO keys, whitelisted like mode,
+   seeded at start, and applied live to a running visualizer.
+
+2. TRAPS.
+
+   2.1 Live stereo toggle vs. history shape. The one deque holds
+   lists (mono) or (L, R) tuples (stereo); flipping stereo while
+   running leaves the other shape in the history, and painting a
+   tuple as heights would die on comparison with int. Each renderer
+   stops at the first mismatched entry - the history visibly
+   truncates for up to 16 frames after a toggle, then refills. The
+   alternative (clearing the deque from the request handler) spreads
+   render state into the FIFO path for no visible gain.
+
+   2.2 Shared gap-clearing. The tunnel cleared its history at four
+   capture-gap sites; a second mode doubles that to eight scattered
+   clears, and a missed one means stale spectra replay on resume.
+   One helper (_clear_vis_history) now owns all visualizer history;
+   the four sites call it.
+
+3. DISPOSITION. Validated per TBX-26-004 practice: geometry,
+palette, stereo symmetry, silence, shape-mismatch, and encode-size
+invariants as runnable checks (test_render.py); mode (bars/wave/
+tunnel, both directions), dir, palette, and stereo switched live
+over the FIFO against a running AirPlay stream on hardware, journal
+clean throughout. The capture pause/resume path is unchanged code;
+its wave history-clear rides the shared helper and is pinned by the
+runnable checks rather than re-driven live (real audio was playing).

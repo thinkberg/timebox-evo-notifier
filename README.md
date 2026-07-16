@@ -101,39 +101,15 @@ echo '{"text": "Deploy OK", "icon_color": [0,255,80], "fps": 15, "silent": true}
 # Custom sound and colors
 echo '{"count": 7, "icon_color": [40,200,255], "sound": "/usr/share/sounds/ocean/stereo/bell.oga"}' > $FIFO
 
-# Live 16-band spectrum of whatever the system is playing
-echo '{"visualizer": true}' > $FIFO            # endless
-echo '{"visualizer": true, "seconds": 30}' > $FIFO  # fixed duration
+# Live spectrum of whatever the system is playing
+echo '{"visualizer": true}' > $FIFO            # endless, 16 rising bars
+echo '{"visualizer": true, "mode": "wave"}' > $FIFO  # scrolling spectrogram
 echo '{"visualizer": true, "mode": "tunnel"}' > $FIFO  # psychedelic tunnel
-echo '{"visualizer": true, "mode": "tunnel", "spin": 2}' > $FIFO  # faster rotation
-echo '{"visualizer": true, "fade": 0.7, "bands": 16}' > $FIFO  # tune the look live
-echo '{"visualizer": true, "stereo": true}' > $FIFO  # split L/R channels
 echo '{"visualizer": false}' > $FIFO           # stop
-
-# Some favorite recipes — every knob switches live, no restart needed:
-
-# Calm stereo tunnel: no rotation, soft glow, chunky bands
-echo '{"visualizer": true, "mode": "tunnel", "stereo": true, "fade": 0.8, "bands": 30, "spin": 0}' > $FIFO
-
-# Slow-motion deep tunnel: long history glow, gentle drift
-echo '{"visualizer": true, "mode": "tunnel", "fade": 0.97, "spin": 0.2}' > $FIFO
-
-# Strobe-y and chunky: coarse bands, hard fade, fast reverse spin
-echo '{"visualizer": true, "mode": "tunnel", "bands": 8, "fade": 0.5, "spin": -3}' > $FIFO
-
-# Stereo bars: left channel rises from the bottom, right falls from the top
-echo '{"visualizer": true, "mode": "bars", "stereo": true}' > $FIFO
-
-# Nudge a single knob while it runs — everything else stays as it is
-echo '{"visualizer": true, "spin": 1}' > $FIFO
-
-# Frame pacing follows the BLE link: colorful recipes (many bands + stereo)
-# make bigger frames, and when they exceed what the radio carries (~60
-# chunks/s) the visualizer drops frames instead of falling behind the music.
-
-# Notifications sent while the visualizer runs are drawn on top of the
-# bars, over an opaque band, so they stay legible.
 ```
+
+Many more recipes — stereo splits, live knob tuning, waterfalls,
+comets, clock pages, shell and cron integration: [EXAMPLES.md](EXAMPLES.md).
 
 The visualizer records the default sink's *monitor* (what the speakers
 play — never the microphone), which KDE reports with the mic-in-use tray
@@ -159,11 +135,13 @@ All keys (each optional):
 | `silent`       | `true` = no sound                          | `false`            |
 | `visualizer`   | `true` starts the live spectrum, `false` stops it | —           |
 | `seconds`      | visualizer duration; omit for endless      | endless            |
-| `mode`         | visualizer look: `"bars"` (16 bands), or `"tunnel"` — spectrum rings flowing inward, fading with age, one band per border pixel (60); switchable while running | `"bars"` |
+| `mode`         | visualizer look: `"bars"` (16 bands), `"tunnel"` — spectrum rings flowing inward, fading with age, one band per border pixel (60) — or `"wave"` — scrolling 16-band spectrogram, the newest spectrum entering at one edge and drifting across; switchable while running | `"bars"` |
 | `spin`         | tunnel rotation in border px per frame, −5…5; negative reverses, 0 stops; switchable while running | `0.5` |
-| `fade`         | tunnel per-ring brightness decay toward the center, 0…1; switchable while running | `0.92` |
+| `fade`         | brightness decay with age — tunnel: per ring toward the center, wave: per column/row of history; 0…1; switchable while running | `0.92` |
 | `bands`        | tunnel analyzer width, 2…60; switchable while running | `60` |
-| `stereo`       | analyze L/R separately: bars mirror bottom (L) / top (R) at half height, tunnel splits into semicircles with the same frequency diametrically opposite; switchable while running | `false` |
+| `stereo`       | analyze L/R separately: bars mirror bottom (L) / top (R) at half height, tunnel splits into semicircles with the same frequency diametrically opposite, wave enters at the middle and ages outward (L left/down, R right/up); switchable while running | `false` |
+| `dir`          | wave scroll axis: `"h"` — newest column at the right, history drifting left, low bands at the bottom — or `"v"` — newest row on top, falling waterfall, low bands at the left; switchable while running | `"h"` |
+| `palette`      | wave colors: `"rainbow"` — hue names the band, brightness its level (the tunnel look) — or `"heat"` — green quiet, yellow mid, red loud (the bars look); switchable while running | `"rainbow"` |
 | `clock`        | pin the sub-views the box's clock cycles through: list from `"time"`, `"weather"`, `"temp"`, `"date"`, e.g. `{"clock": ["time","weather"]}`; each is a full-screen page (weather: an animated scene) shown ~15 s in turn; replayed whenever the daemon restores the clock | `TIMEBOX_CLOCK` env, or `time,weather` |
 | `clock_color`  | clock color `[r,g,b]` (only with `clock`)  | white              |
 | `clock_flash`  | seconds the clock interrupts a running visualizer per flash; `0` = never | `30` |
@@ -183,7 +161,7 @@ The idle panel shows the box's clock channel. Its enabled sub-views are
 full-screen pages the box cycles through (~15 s each): plain time, an
 *animated* weather scene, temperature, date — the firmware cannot merge
 them onto one page. Pick pages with the `clock` key, e.g.
-`echo '{"clock": ["time","weather"]}' > $XDG_RUNTIME_DIR/timebox.fifo`,
+`echo '{"clock": ["time","weather"]}' > $FIFO`,
 or set the boot default with `TIMEBOX_CLOCK=time,weather` in the env
 file (a plain `TIMEBOX_CLOCK=time` means a steady, never-cycling
 clock).
@@ -234,16 +212,6 @@ itself (~10–20 s, audio may retry for up to a few minutes):
 .venv/bin/python timebox_notify.py --count 5
 .venv/bin/python timebox_notify.py --text "Kaffee ist fertig!" --icon-color 255,180,0
 .venv/bin/python timebox_notify.py --count 12 --silent --brightness 60
-```
-
-## Practical examples
-
-```bash
-# Long-running command, notify on completion
-make -j8; echo "{\"text\": \"make: exit $?\"}" > $XDG_RUNTIME_DIR/timebox.fifo
-
-# Cron: top of every hour, quietly
-0 * * * * echo '{"text": "'"$(date +\%H:00)"'", "silent": true}' > /run/user/1000/timebox.fifo
 ```
 
 ## Security notes

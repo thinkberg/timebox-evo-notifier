@@ -171,7 +171,7 @@ def parse_params(raw: dict) -> dict:
             p["seconds"] = min(3600.0, max(1.0, float(raw["seconds"])))
         except Exception:
             pass
-    if raw.get("mode") in ("bars", "tunnel"):
+    if raw.get("mode") in ("bars", "tunnel", "wave"):
         p["mode"] = raw["mode"]
     if "spin" in raw:
         try:  # border px per frame; negative reverses, 0 stops the rotation
@@ -190,6 +190,10 @@ def parse_params(raw: dict) -> dict:
             pass
     if "stereo" in raw:
         p["stereo"] = bool(raw["stereo"])
+    if raw.get("dir") in ("h", "v"):  # wave scroll axis
+        p["dir"] = raw["dir"]
+    if raw.get("palette") in ("rainbow", "heat"):  # wave colors
+        p["palette"] = raw["palette"]
     if "clock" in raw:
         try:
             views = [v for v in raw["clock"] if v in _CLOCK_VIEWS]
@@ -376,6 +380,59 @@ def _q32(v: float) -> int:
     return min(255, (int(v) + 16) & ~31)
 
 
+# Wave state: per-frame band heights, newest first (mono lists, stereo L/R tuples).
+_wave: dict = {"hist": deque(maxlen=16)}
+
+
+def _clear_vis_history() -> None:
+    _tunnel["hist"].clear()
+    _wave["hist"].clear()
+
+
+def _wave_color(band: int, height: int) -> RGB:
+    if _vis["palette"] == "heat":  # loudness only; the position names the band
+        return _bar_color(height - 1, 16) if height else (0, 0, 0)
+    return _tunnel_color(band, VIS_BANDS, height)
+
+
+def _wave_line(pixels: list[RGB], heights: list[int], age: int, pos: int) -> None:
+    """Stamp one history entry as column `pos` (dir h, band 0 at the bottom)
+    or row `pos` (dir v, band 0 at the left), dimmed by its age."""
+    fade = _vis["fade"] ** age
+    for band, h in enumerate(heights):
+        idx = ((15 - band) * 16 + pos if _vis["dir"] == "h"
+               else pos * 16 + band)
+        r, g, b = _wave_color(band, h)
+        pixels[idx] = (_q32(r * fade), _q32(g * fade), _q32(b * fade))
+
+
+def _wave_frame(heights: list[int]) -> list[RGB]:
+    """Scrolling spectrogram: the newest spectrum enters at the right edge
+    (dir h) or the top (dir v) and drifts across, fading with age."""
+    _wave["hist"].appendleft(heights)
+    pixels: list[RGB] = [(0, 0, 0)] * 256
+    for age, entry in enumerate(_wave["hist"]):
+        if isinstance(entry, tuple):  # stereo leftovers after a live toggle
+            break
+        _wave_line(pixels, entry, age, 15 - age if _vis["dir"] == "h" else age)
+    return pixels
+
+
+def _wave_frame_stereo(left: list[int], right: list[int]) -> list[RGB]:
+    """Stereo wave: both spectra enter at the middle and age outward —
+    left toward the left/bottom edge, right toward the right/top, the
+    same left=bottom / right=top split as the stereo bars."""
+    _wave["hist"].appendleft((left, right))
+    pixels: list[RGB] = [(0, 0, 0)] * 256
+    for age, entry in enumerate(_wave["hist"]):
+        if age > 7 or not isinstance(entry, tuple):
+            break
+        hl, hr = entry
+        _wave_line(pixels, hl, age, 7 - age if _vis["dir"] == "h" else 8 + age)
+        _wave_line(pixels, hr, age, 8 + age if _vis["dir"] == "h" else 7 - age)
+    return pixels
+
+
 # --- notification overlays (stamped onto visualizer frames) --------------------
 
 
@@ -441,7 +498,8 @@ class StaticOverlay:
 # loop-clock deadline until which the clock owns the panel (weather_loop).
 _vis: dict = {"task": None, "overlay": None, "mode": "bars", "stereo": False,
               "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE,
-              "bands": len(_RINGS[0]), "flash_until": 0.0}
+              "bands": len(_RINGS[0]), "dir": "h", "palette": "rainbow",
+              "flash_until": 0.0}
 
 
 def _sink_running() -> bool:
@@ -559,7 +617,7 @@ async def visualize(params: dict) -> None:
     sent = 0
     quiet = 0
     waiting = False  # capture paused/lost; log the resume once, not per retry
-    _tunnel["hist"].clear()
+    _clear_vis_history()
     print(f"visualizer started ({seconds}s)" if seconds
           else 'visualizer started (endless — stop with {"visualizer": false})',
           flush=True)
@@ -571,7 +629,7 @@ async def visualize(params: dict) -> None:
                 if not waiting:
                     waiting = True
                     print("visualizer: audio idle — capture paused", flush=True)
-                    _tunnel["hist"].clear()  # stale history; restart fresh
+                    _clear_vis_history()  # stale history; restart fresh
                     await _restore_clock(client)
                 # Overlays are normally stamped onto capture frames; keep
                 # notifications visible while paused.
@@ -636,7 +694,7 @@ async def visualize(params: dict) -> None:
                                 waiting = True
                                 print("visualizer: audio silent — clock "
                                       "restored", flush=True)
-                                _tunnel["hist"].clear()
+                                _clear_vis_history()
                                 await _restore_clock(client)
                             break
                         if waiting:
@@ -665,6 +723,9 @@ async def visualize(params: dict) -> None:
                     if mode == "tunnel":
                         frame = (_tunnel_frame_stereo(*heights) if stereo
                                  else _tunnel_frame(heights))
+                    elif mode == "wave":
+                        frame = (_wave_frame_stereo(*heights) if stereo
+                                 else _wave_frame(heights))
                     else:
                         frame = (_bar_frame_stereo(*heights) if stereo
                                  else _bar_frame(heights))
@@ -688,7 +749,7 @@ async def visualize(params: dict) -> None:
                     waiting = True
                     print("visualizer: audio capture ended — waiting for audio",
                           flush=True)
-                    _tunnel["hist"].clear()  # stale history; restart fresh
+                    _clear_vis_history()  # stale history; restart fresh
                     await _restore_clock(client)
                 await asyncio.sleep(2)
             finally:
@@ -889,12 +950,15 @@ async def handle(client, params: dict) -> None:
             _vis["spin"] = params.get("spin", TUNNEL_SPIN)
             _vis["fade"] = params.get("fade", TUNNEL_FADE)
             _vis["bands"] = params.get("bands", len(_RINGS[0]))
+            _vis["dir"] = params.get("dir", "h")
+            _vis["palette"] = params.get("palette", "rainbow")
             _vis["task"] = _spawn(visualize(params), "visualizer")
         elif not params["visualizer"] and vis_running:
             _vis["task"].cancel()
         elif params["visualizer"]:
             changed = []
-            for key in ("mode", "spin", "fade", "bands", "stereo"):
+            for key in ("mode", "spin", "fade", "bands", "stereo", "dir",
+                        "palette"):
                 if params.get(key, _vis[key]) != _vis[key]:
                     _vis[key] = params[key]
                     changed.append(f"{key}: {params[key]}")
