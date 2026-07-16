@@ -223,8 +223,8 @@ def set_pixel(pixels: Pixels, x: int, y: int, color: RGB) -> None:
 
 
 # Icon templates, one string per pixel row, X lit in icon_color. Keep the
-# center clear of load-bearing shape: draw_number stamps the count badge
-# over rows 5-11 there (an outline with the count inside the face).
+# identifying shape (ears, folds, tentacle) outside the center of rows
+# 5-11, where draw_number carves its count window.
 _ICONS = {
     "envelope": (
         "................",
@@ -244,24 +244,26 @@ _ICONS = {
         "................",
         "................",
     ),
-    # Octocat head: ears, sides, rounded jaw — for gitify.
+    # Octocat, GitHub-mark style: filled silhouette — ear nubs with a dip
+    # between them, wide cheeks, and the tentacle curling out bottom-left.
+    # The count window is carved out of the face by draw_number.
     "github": (
         "................",
-        "................",
         "..XX........XX..",
-        ".X..X......X..X.",
-        ".X...XXXXXX...X.",
-        ".X............X.",
-        ".X............X.",
-        ".X............X.",
-        ".X............X.",
-        ".X............X.",
-        ".X............X.",
-        "..X..........X..",
-        "...XX......XX...",
-        ".....XXXXXX.....",
-        "................",
-        "................",
+        ".XXXX......XXXX.",
+        ".XXXXXXXXXXXXXX.",
+        ".XXXXXXXXXXXXXX.",
+        "XXXXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXXXX",
+        ".XXXXXXXXXXXXXX.",
+        ".XXXXXXXXXXXXXX.",
+        "..XXXXXXXXXXXX..",
+        "...XXXXXXXXXX...",
+        "....XX..........",
+        "..XXX...........",
     ),
 }
 

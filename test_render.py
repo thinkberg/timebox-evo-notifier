@@ -75,7 +75,10 @@ cat = render_notification(42, (255, 60, 40), (255, 255, 255), (0, 0, 0),
                           icon="github")
 env = render_notification(42, (255, 60, 40), (255, 255, 255), (0, 0, 0))
 assert cat != env
-assert cat[2 * 16 + 2] == cat[2 * 16 + 13] == (255, 60, 40)  # ear tips
+assert cat[2 * 16 + 2] == cat[2 * 16 + 13] == (255, 60, 40)  # ears
+assert cat[1 * 16 + 7] == (0, 0, 0)  # dip between the ears
+assert cat[15 * 16 + 2] == (255, 60, 40)  # tentacle, bottom-left only
+assert cat[15 * 16 + 13] == (0, 0, 0)
 assert (255, 255, 255) in cat  # digits stamped inside the face
 assert render_notification(1, (9, 9, 9), (2, 2, 2), (0, 0, 0),
                            icon="junk") == render_notification(

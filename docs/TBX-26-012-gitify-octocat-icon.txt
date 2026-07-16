@@ -23,9 +23,13 @@ template center as before.
    of 16 row-strings per icon; render_notification builds the frame
    with one comprehension and stamps the count on top (draw_number
    already clears its badge region). The pixel art is visible in the
-   source, and a third icon is data, not code. Both glyphs keep their
-   load-bearing shape (ears, folds, outline) outside rows 5-11 center
-   columns, which a 2-digit count clears.
+   source, and a third icon is data, not code. The octocat is the
+   GitHub-mark silhouette, filled: ear nubs with a dip between them,
+   wide cheeks, the tentacle curling out bottom-left (an outline-only
+   cat read as generic animal). The count window is carved out of the
+   face by draw_number; each glyph keeps its identifying shape (ears,
+   folds, tentacle) outside rows 5-11 center columns, which a 2-digit
+   count clears.
 
    1.2 Bridge policy. UnreadTracker now remembers the app per unread
    id (dict instead of set); the icon property derives the badge:
