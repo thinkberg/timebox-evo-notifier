@@ -222,9 +222,8 @@ def set_pixel(pixels: Pixels, x: int, y: int, color: RGB) -> None:
         pixels[y * WIDTH + x] = color
 
 
-# Icon templates, one string per pixel row, X lit in icon_color. Keep the
-# identifying shape (ears, folds, tentacle) outside the center of rows
-# 5-11, where draw_number carves its count window.
+# Icon templates, one string per pixel row, X lit in icon_color. The count
+# digits print straight on top (rows 6-10, centered), in number_color.
 _ICONS = {
     "envelope": (
         "................",
@@ -268,21 +267,11 @@ _ICONS = {
 }
 
 
-def draw_number(
-    pixels: Pixels,
-    number: int,
-    color: RGB,
-    background: RGB,
-) -> None:
+def draw_number(pixels: Pixels, number: int, color: RGB) -> None:
     text = str(max(0, min(number, 99)))
     width = len(text) * 3 + max(0, len(text) - 1)
-    start_x = (WIDTH - width) // 2
+    start_x = (WIDTH - width + 1) // 2  # round right: optically centered
     start_y = 6
-
-    # Clear a small badge region inside the envelope.
-    for y in range(5, 12):
-        for x in range(max(0, start_x - 1), min(WIDTH, start_x + width + 1)):
-            set_pixel(pixels, x, y, background)
 
     for digit_index, digit in enumerate(text):
         glyph = DIGITS[digit]
@@ -304,7 +293,7 @@ def render_notification(
                       for row in _ICONS.get(icon, _ICONS["envelope"])
                       for c in row]
     if count > 0:
-        draw_number(pixels, count, number_color, background)
+        draw_number(pixels, count, number_color)
     return pixels
 
 

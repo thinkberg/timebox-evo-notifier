@@ -26,10 +26,10 @@ template center as before.
    source, and a third icon is data, not code. The octocat is the
    GitHub-mark silhouette, filled: ear nubs with a dip between them,
    wide cheeks, the tentacle curling out bottom-left (an outline-only
-   cat read as generic animal). The count window is carved out of the
-   face by draw_number; each glyph keeps its identifying shape (ears,
-   folds, tentacle) outside rows 5-11 center columns, which a 2-digit
-   count clears.
+   cat read as generic animal). The count prints straight onto the
+   icon in number_color — the badge-region clear is gone (a carved
+   window read as a hole in the mark) — rounded right of the strict
+   floor-centering, which sat 1 px left of the optical center.
 
    1.2 Bridge policy. UnreadTracker now remembers the app per unread
    id (dict instead of set); the icon property derives the badge:
