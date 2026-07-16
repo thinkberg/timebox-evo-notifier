@@ -139,8 +139,10 @@ The visualizer records the default sink's *monitor* (what the speakers
 play — never the microphone), which KDE reports with the mic-in-use tray
 icon, labeled "TimeBox visualizer" — but only while a real microphone
 device is present; with none attached KDE shows nothing at all. In
-endless mode the capture — and with it the icon — pauses after 10 s of
-silence and resumes when audio plays again.
+endless mode 10 s of silence hands the panel back to the clock; the
+capture — and with it the icon — pauses once the sink actually goes idle
+(a silent-but-open stream, like a paused AirPlay sender, keeps both
+alive). Everything resumes when audio plays again.
 
 All keys (each optional):
 

@@ -618,19 +618,36 @@ async def visualize(params: dict) -> None:
                     # private-buffer poke in this one place (like _le_alive).
                     while len(proc.stdout._buffer) >= bytes_per_frame:
                         data = await proc.stdout.readexactly(bytes_per_frame)
-                    if waiting:
+                    samples = array.array("h", data)
+                    if waiting and any(samples):
                         waiting = False
                         print("visualizer: audio capture resumed", flush=True)
-                    samples = array.array("h", data)
                     if total is None:
                         quiet = 0 if any(samples) else quiet + 1
                         if quiet >= SILENCE_SECS * VIS_FPS:
-                            # ponytail: an uncorked stream of pure digital
-                            # zeros keeps the sink RUNNING, so this respawns
-                            # parec every SILENCE_SECS; panel is black either
-                            # way. Track corked state via pactl if it bites.
+                            # ponytail: an uncorked silent stream (an AirPlay
+                            # sender on pause, the combine-sink slave) keeps
+                            # the sink RUNNING forever, so this still respawns
+                            # parec every SILENCE_SECS and the mic indicator
+                            # stays on. But the panel goes to the clock, not
+                            # to an endless stream of black frames.
                             quiet = 0
+                            if not waiting:
+                                waiting = True
+                                print("visualizer: audio silent — clock "
+                                      "restored", flush=True)
+                                _tunnel["hist"].clear()
+                                await _restore_clock(client)
                             break
+                        if waiting:
+                            # Still digital silence: the clock owns the panel;
+                            # only a notification overlay may paint over it.
+                            if _vis["overlay"] is not None:
+                                await _push_frame(client, _apply_overlay(
+                                    _bar_frame([0] * VIS_BANDS)))
+                                if _vis["overlay"] is None:
+                                    await _restore_clock(client)
+                            continue
                     # Clock flash: the clock owns the panel; keep draining
                     # audio, skip the writes. A notification overrides it.
                     if (_vis["overlay"] is None and

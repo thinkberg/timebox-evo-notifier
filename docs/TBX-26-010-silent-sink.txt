@@ -1,0 +1,72 @@
+TECHNICAL MEMORANDUM                                         TBX-26-010
+
+SUBJECT:      Silence with a running sink - the black-panel hours, and
+              why the clock now takes the panel back on quiet audio
+DATE:         2026-07-16
+STATUS:       FINAL - reproduced live during diagnosis; both
+              transitions verified against the panel with timestamps
+
+
+SUMMARY. The operator reported the box "just stopped" - and unlike the
+morning's episodes (TBX-26-009), the journal for the window was
+completely empty: no ack timeouts, no link losses, radio links healthy
+throughout. The box had not stopped; it was diligently displaying an
+endless stream of black frames. The visualizer's idle detection rested
+on the sink's RUNNING state, and this system always has a silent but
+uncorked stream on the default sink (the combine-sink slave; an
+AirPlay sender left on pause). Silence therefore never looked idle:
+the silence counter just respawned the capture, and the frames it kept
+rendering were black. A pixel panel showing black is indistinguishable
+from a dead one. The silence trip now behaves like the idle
+transition: clock restored, frames withheld until real samples arrive.
+
+1. A FAILURE WITH NO LOG LINES. Between the last "audio capture
+resumed" and the operator giving up and stopping the service, the
+journal shows only routine clock flashes and weather pushes. Every
+radio layer was ruled out: wireplumber saw the A2DP transport running
+uninterrupted, and with the TBX-26-009 code deployed a dead LE link
+cannot pass silently any more. What remained was a daemon doing
+exactly what it was told: capture zeros, render zeros, push zeros -
+ten black frames a second, acked by the box, forever. The one comment
+in the code that knew ("panel is black either way") had classified
+this as a harmless ceiling. It was user-visible the whole time.
+
+2. WHY SILENCE NEVER LOOKED IDLE. The endless visualizer pauses its
+capture when the default sink stops RUNNING - correct for players
+that cork their streams when stopped, which is how it always worked in
+testing. But this system's default sink permanently hosts an uncorked
+slave stream from a combine sink, and Shairport Sync keeps its stream
+open while the AirPlay sender is merely paused. Either one holds the
+sink RUNNING while feeding exact digital zeros. The silence counter
+(10 s of all-zero frames) existed for precisely this case - but its
+only action was to respawn the capture so the sink-state check could
+run again, and the check kept answering RUNNING. The loop rendered on.
+
+3. THE FIX. The silence trip is now a first-class idle transition:
+restore the clock, log "audio silent - clock restored", clear the
+tunnel history, and stop pushing frames until a nonzero sample
+arrives ("audio capture resumed"). A notification overlay still
+paints - on a black background - while silent, matching the paused
+path. The capture keeps cycling every 10 s underneath, so the
+mic-in-use indicator stays on while a silent stream holds the sink;
+that remains the (now genuinely cosmetic) ceiling.
+
+4. VERIFICATION, WITH A DETOUR. The condition reproduced itself during
+diagnosis: the operator's audio went quiet mid-investigation and the
+freshly deployed trip fired on schedule - the panel went to the clock,
+not to black. The detour is instructive: with the visualizer silently
+waiting, the daemon's CPU use dropped so low that it read as a wedged
+process, and two capture respawns overlapping made it look like a
+process leak. Both were the waiting loop working as designed. A
+20-second noise burst then pinned both directions: "audio capture
+resumed" one second after sound started, "audio silent - clock
+restored" 18 s after it ended (the counter counts render iterations,
+not wall seconds, so ack pacing stretches the nominal 10 s somewhat).
+
+5. DISPOSITION. Fixed in timebox_daemon.py (the silence trip in
+visualize()); README updated where it described the old pause
+behavior. Two lessons. First, an idle detector needs to believe the
+data, not just the plumbing: sink state says someone MAY be playing,
+only the samples say whether they ARE. Second, a known limitation
+filed as harmless deserves one test against reality - "panel is black
+either way" was true, and the panel being black was exactly the bug.

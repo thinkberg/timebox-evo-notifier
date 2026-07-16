@@ -14,5 +14,6 @@ same change as the memo file.
 | [TBX-26-007](TBX-26-007-clock-channel.txt) | Clock channel decoded — state dumps, page cycling, command layout | 2026-07-14 | FINAL |
 | [TBX-26-008](TBX-26-008-ble-backpressure.txt) | The invisible BLE write queue — ack-paced visualizer frames | 2026-07-15 | FINAL |
 | [TBX-26-009](TBX-26-009-ack-silence.txt) | Ack silence means the link is dead — fail over in 2 s | 2026-07-16 | FINAL |
+| [TBX-26-010](TBX-26-010-silent-sink.txt) | Silence with a running sink — the clock takes the panel back | 2026-07-16 | FINAL |
 | [TS-26-001](TS-26-001-audio-delivery-trade-study.txt) | Audio delivery through the box speaker — trade study | 2026-07-12 | FINAL |
 | [TS-26-002](TS-26-002-code-production-quality-trade-study.txt) | AI-agent code production without upfront security rules | 2026-07-12 | FINAL |
