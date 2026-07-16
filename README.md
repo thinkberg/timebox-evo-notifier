@@ -126,7 +126,8 @@ All keys (each optional):
 |----------------|--------------------------------------------|--------------------|
 | `text`         | scroll this text instead of the icon       | —                  |
 | `fps`          | scroll speed in frames/s (1 px per frame)  | `10`               |
-| `count`        | badge number 0–99 on the envelope icon     | `1`                |
+| `count`        | badge number 0–99 on the icon              | `1`                |
+| `icon`         | badge icon: `"envelope"`, or `"github"` — an octocat head, for GitHub notifiers like gitify | `"envelope"` |
 | `icon_color`   | icon / text color `[r,g,b]`                | `[255,60,40]`      |
 | `number_color` | badge color `[r,g,b]`                      | `[255,255,255]`    |
 | `background`   | background color `[r,g,b]`                 | `[0,0,0]`          |
@@ -198,6 +199,10 @@ The badge counts notifications that are still unread: dismissing one (or
 clicking it) decrements it, while one that merely times out on screen stays
 counted — same as the bell icon. While the visualizer runs, an arriving badge
 shows on top of the bars for a few seconds instead of persisting.
+
+The badge icon names the source: an octocat head while gitify is the only
+app with unread notifications, the envelope otherwise (any unread mail
+wins — deterministic, no flip-flopping while both are pending).
 
 How it works and why it eavesdrops rather than replaces KDE's notification
 daemon: [TBX-26-003](docs/TBX-26-003-kde-notification-bridge.txt).

@@ -5,10 +5,11 @@ Eavesdrops the session bus (BecomeMonitor) instead of replacing KDE's
 notification daemon: desktop notifications keep working exactly as before,
 and allow-listed ones additionally bump a count badge on the panel.
 
-Only the COUNT is sent to the box — never notification text. The box's BLE
-link is unencrypted, so anything displayed is readable by a sniffer in radio
-range; a bare number leaks nothing. Notification content is never logged
-either.
+Only the COUNT (and which badge icon to wear: an octocat head while gitify
+is the only unread source, the envelope otherwise) is sent to the box —
+never notification text. The box's BLE link is unencrypted, so anything
+displayed is readable by a sniffer in radio range; a bare number leaks
+nothing. Notification content is never logged either.
 
 Config (~/.config/timebox/env):
     TIMEBOX_ONLY_APPS=Thunderbird,Nextcloud   # nothing is forwarded if empty
@@ -55,51 +56,61 @@ class UnreadTracker:
 
     def __init__(self, allowed: set[str]) -> None:
         self.allowed = allowed
-        self.unread: set[int] = set()
-        self._pending: dict[int, int] = {}  # call serial -> replaces_id
+        self.unread: dict[int, str] = {}  # notification id -> app (lowercased)
+        self._pending: dict[int, tuple[str, int]] = {}  # serial -> (app, replaces_id)
 
     def on_notify(self, serial: int, app_name: str, replaces_id: int) -> None:
-        if app_name.lower() not in self.allowed:
+        app = app_name.lower()
+        if app not in self.allowed:
             return
-        self._pending[serial] = replaces_id
+        self._pending[serial] = (app, replaces_id)
 
     def on_reply(self, reply_serial: int, notification_id: int) -> bool:
         """Returns True if the unread count changed."""
-        replaces_id = self._pending.pop(reply_serial, None)
-        if replaces_id is None:
+        pending = self._pending.pop(reply_serial, None)
+        if pending is None:
             return False  # not one of ours
+        app, replaces_id = pending
         if replaces_id and replaces_id in self.unread:
             return False  # an update of an existing notification, not a new one
         before = len(self.unread)
-        self.unread.add(notification_id)
+        self.unread[notification_id] = app
         return len(self.unread) != before
 
     def on_closed(self, notification_id: int, reason: int) -> bool:
         """Returns True if the unread count changed."""
         if reason == CLOSED_EXPIRED or notification_id not in self.unread:
             return False
-        self.unread.remove(notification_id)
+        del self.unread[notification_id]
         return True
 
     @property
     def count(self) -> int:
         return len(self.unread)
 
+    @property
+    def icon(self) -> str:
+        """The badge icon: octocat when gitify is the only unread source,
+        the envelope whenever any other app has unread (envelope wins)."""
+        # ponytail: hardcoded app→icon; grow a map when a third app wants one
+        return ("github" if self.unread
+                and set(self.unread.values()) == {"gitify"} else "envelope")
 
-# What the panel is currently showing, as far as we know. None = unknown
-# (nothing pushed yet, or the last push was lost).
-_shown: int | None = None
+
+# What the panel is currently showing, as far as we know, as (count, icon).
+# None = unknown (nothing pushed yet, or the last push was lost).
+_shown: tuple[int, str] | None = None
 
 
-def push(count: int) -> bool:
+def push(count: int, icon: str) -> bool:
     """Show `count` on the panel (silent — box audio is retired).
 
     Fails quietly when no daemon is listening: it may simply be reconnecting
     to the box (~15 s). The reconcile loop retries.
     """
     global _shown
-    if send_to_daemon({"count": count, "silent": True}):
-        _shown = count
+    if send_to_daemon({"count": count, "icon": icon, "silent": True}):
+        _shown = (count, icon)
         return True
     _shown = None
     return False
@@ -114,8 +125,8 @@ async def reconcile(tracker: "UnreadTracker", period: float = 5.0) -> None:
     """
     while True:
         await asyncio.sleep(period)
-        if _shown != tracker.count:
-            push(tracker.count)
+        if _shown != (tracker.count, tracker.icon):
+            push(tracker.count, tracker.icon)
 
 
 async def main() -> None:
@@ -157,8 +168,8 @@ async def main() -> None:
             changed = tracker.on_closed(msg.body[0], msg.body[1])
 
         if changed:
-            print(f"unread: {tracker.count}", flush=True)
-            if not push(tracker.count):
+            print(f"unread: {tracker.count} ({tracker.icon})", flush=True)
+            if not push(tracker.count, tracker.icon):
                 print("daemon not listening — will retry", flush=True)
 
         # Claim every message: a monitor sees method calls addressed to other

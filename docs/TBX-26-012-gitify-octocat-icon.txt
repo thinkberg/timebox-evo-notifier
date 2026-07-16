@@ -1,0 +1,61 @@
+TECHNICAL MEMORANDUM                                         TBX-26-012
+
+SUBJECT:      Per-source badge icons - an octocat head for gitify,
+              envelope-wins policy for mixed unread
+DATE:         2026-07-16
+STATUS:       FINAL - feature operational, validated live
+
+SUMMARY. The unread badge (TBX-26-003) wore the envelope regardless of
+source, so GitHub notifications from gitify read as mail. The badge
+icon now names the source: an octocat head while gitify is the only
+app with unread notifications, the envelope as soon as any other
+allow-listed app (mail) has unread - envelope wins, deterministic, no
+flip-flopping while both are pending. The icon travels as a new
+whitelisted FIFO key (icon: "envelope"/"github"), so any FIFO client
+can use it directly. Icons are static 16x16 row-string templates (the
+DIGITS idiom), not drawing code; the count badge is stamped over the
+template center as before.
+
+1. DESIGN.
+
+   1.1 Templates over drawing. The envelope's set_pixel loops and the
+   would-be octocat drawing function were replaced by an _ICONS dict
+   of 16 row-strings per icon; render_notification builds the frame
+   with one comprehension and stamps the count on top (draw_number
+   already clears its badge region). The pixel art is visible in the
+   source, and a third icon is data, not code. Both glyphs keep their
+   load-bearing shape (ears, folds, outline) outside rows 5-11 center
+   columns, which a 2-digit count clears.
+
+   1.2 Bridge policy. UnreadTracker now remembers the app per unread
+   id (dict instead of set); the icon property derives the badge:
+   octocat iff the unread sources are exactly {gitify}. The panel
+   state is reconciled as a (count, icon) tuple so a lost push or an
+   icon-only flip converges within the 5 s reconcile period. Only the
+   count and icon ever reach the box - still no notification content
+   (TBX-26-003 threat model unchanged).
+
+   1.3 Daemon. parse_params whitelists icon like mode/palette; junk
+   falls back to the envelope. render_notification gained the icon
+   parameter, defaulted, so every existing caller is unchanged.
+
+2. TRAPS.
+
+   2.1 Test-harness id extraction. Live validation initially "showed"
+   the close path broken: unread counted up but never down, and the
+   Notify method returns seen by a monitor connection seemed to carry
+   truncated ids. All of it was one artifact: extracting the id from
+   gdbus output "(uint32 45,)" with tr -dc 0-9 keeps the digits of
+   "uint32", yielding 3245. CloseNotification(3245) closes nothing -
+   but plasma still broadcasts NotificationClosed(3245), which made
+   the phantom look real on the bus. Extract with awk '{print $2+0}'.
+   Nothing in the bridge, dbus_fast, or plasma was wrong.
+
+3. DISPOSITION. Runnable checks (test_render.py): icon whitelist,
+octocat/envelope template divergence, ear pixels surviving a 2-digit
+badge, unknown icon falling back, and the tracker's icon policy
+(gitify-only -> github, mixed -> envelope, mail dismissed -> flips
+back). Live on hardware: FIFO-direct octocat render; gitify + mail
+notifications driven over D-Bus with the bridge running - counts,
+both icon flips, and the close-path decrement observed in the
+journal; panel state converged after every step.

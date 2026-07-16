@@ -65,6 +65,21 @@ assert "brightness" not in p
 assert p["icon_color"] == (255, 60, 40)
 p = parse_params({"brightness": 150, "seconds": 0})
 assert p["brightness"] == 100 and p["seconds"] == 1.0
+assert parse_params({"icon": "github"})["icon"] == "github"
+assert parse_params({"icon": "junk"})["icon"] == "envelope"
+assert parse_params({})["icon"] == "envelope"
+
+# Icon templates: the octocat differs from the envelope, its ear tips
+# survive a 2-digit badge, and the count digits land on top.
+cat = render_notification(42, (255, 60, 40), (255, 255, 255), (0, 0, 0),
+                          icon="github")
+env = render_notification(42, (255, 60, 40), (255, 255, 255), (0, 0, 0))
+assert cat != env
+assert cat[2 * 16 + 2] == cat[2 * 16 + 13] == (255, 60, 40)  # ear tips
+assert (255, 255, 255) in cat  # digits stamped inside the face
+assert render_notification(1, (9, 9, 9), (2, 2, 2), (0, 0, 0),
+                           icon="junk") == render_notification(
+                               1, (9, 9, 9), (2, 2, 2), (0, 0, 0))
 
 # Overlays: the scroll clears its band to background and reports it is
 # still running; the static overlay derives sane row bounds and stamps.
@@ -308,5 +323,16 @@ assert t.on_closed(1, CLOSED_EXPIRED) is False and t.count == 2  # still unread
 assert t.on_closed(1, CLOSED_DISMISSED) is True and t.count == 1
 assert t.on_closed(2, CLOSED_BY_CALL) is True and t.count == 0
 assert t.on_closed(2, CLOSED_DISMISSED) is False  # already gone, no re-fire
+
+# Icon policy: octocat only while gitify is the sole unread source; any
+# unread mail brings the envelope back (envelope wins); empty = envelope.
+t = UnreadTracker({"thunderbird", "gitify"})
+assert t.icon == "envelope"
+t.on_notify(serial=20, app_name="gitify", replaces_id=0)
+assert t.on_reply(20, 5) is True and (t.count, t.icon) == (1, "github")
+t.on_notify(serial=21, app_name="Thunderbird", replaces_id=0)
+assert t.on_reply(21, 6) is True and (t.count, t.icon) == (2, "envelope")
+assert t.on_closed(6, CLOSED_DISMISSED) is True  # mail read: octocat again
+assert (t.count, t.icon) == (1, "github")
 
 print("all checks pass")

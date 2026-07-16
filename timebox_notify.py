@@ -222,19 +222,48 @@ def set_pixel(pixels: Pixels, x: int, y: int, color: RGB) -> None:
         pixels[y * WIDTH + x] = color
 
 
-def draw_envelope(pixels: Pixels, color: RGB) -> None:
-    # Border.
-    for x in range(1, 15):
-        set_pixel(pixels, x, 3, color)
-        set_pixel(pixels, x, 12, color)
-    for y in range(3, 13):
-        set_pixel(pixels, 1, y, color)
-        set_pixel(pixels, 14, y, color)
-
-    # Envelope folds.
-    for offset in range(6):
-        set_pixel(pixels, 2 + offset, 4 + offset, color)
-        set_pixel(pixels, 13 - offset, 4 + offset, color)
+# Icon templates, one string per pixel row, X lit in icon_color. Keep the
+# center clear of load-bearing shape: draw_number stamps the count badge
+# over rows 5-11 there (an outline with the count inside the face).
+_ICONS = {
+    "envelope": (
+        "................",
+        "................",
+        "................",
+        ".XXXXXXXXXXXXXX.",
+        ".XX..........XX.",
+        ".X.X........X.X.",
+        ".X..X......X..X.",
+        ".X...X....X...X.",
+        ".X....X..X....X.",
+        ".X.....XX.....X.",
+        ".X............X.",
+        ".X............X.",
+        ".XXXXXXXXXXXXXX.",
+        "................",
+        "................",
+        "................",
+    ),
+    # Octocat head: ears, sides, rounded jaw — for gitify.
+    "github": (
+        "................",
+        "................",
+        "..XX........XX..",
+        ".X..X......X..X.",
+        ".X...XXXXXX...X.",
+        ".X............X.",
+        ".X............X.",
+        ".X............X.",
+        ".X............X.",
+        ".X............X.",
+        ".X............X.",
+        "..X..........X..",
+        "...XX......XX...",
+        ".....XXXXXX.....",
+        "................",
+        "................",
+    ),
+}
 
 
 def draw_number(
@@ -267,9 +296,11 @@ def render_notification(
     icon_color: RGB,
     number_color: RGB,
     background: RGB,
+    icon: str = "envelope",
 ) -> Pixels:
-    pixels: Pixels = [background] * (WIDTH * HEIGHT)
-    draw_envelope(pixels, icon_color)
+    pixels: Pixels = [icon_color if c == "X" else background
+                      for row in _ICONS.get(icon, _ICONS["envelope"])
+                      for c in row]
     if count > 0:
         draw_number(pixels, count, number_color, background)
     return pixels

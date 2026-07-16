@@ -10,7 +10,8 @@ Run:      TIMEBOX_ADDRESS=<box-mac> python timebox_daemon.py
 Notify:   echo '{"count": 3}' > $XDG_RUNTIME_DIR/timebox.fifo
 
 Accepted JSON keys (all optional): text "..." (scrolls instead of the
-envelope icon; fps sets scroll speed), count, icon_color [r,g,b],
+count badge; fps sets scroll speed), count, icon "envelope" (default)
+or "github" (octocat head, for gitify), icon_color [r,g,b],
 number_color [r,g,b], background [r,g,b], brightness 0-100,
 sound <path>, silent true/false. visualizer true streams a 16-band
 spectrum of the system audio (endless — capturing only while audio
@@ -153,6 +154,8 @@ def parse_params(raw: dict) -> dict:
         p["count"] = min(99, max(0, int(raw.get("count", 1))))
     except Exception:
         p["count"] = 1
+    p["icon"] = raw["icon"] if raw.get("icon") in ("envelope", "github") \
+        else "envelope"
     try:
         p["fps"] = min(20.0, max(1.0, float(raw.get("fps", 10))))
     except Exception:
@@ -985,6 +988,7 @@ async def handle(client, params: dict) -> None:
     else:
         pixels = render_notification(
             count=params["count"],
+            icon=params["icon"],
             icon_color=params["icon_color"],
             number_color=params["number_color"],
             background=params["background"],

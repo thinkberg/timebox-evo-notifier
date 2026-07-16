@@ -25,6 +25,10 @@ echo '{"text": "Deploy OK", "icon_color": [0,255,80], "fps": 15, "silent": true}
 
 # Custom sound and colors
 echo '{"count": 7, "icon_color": [40,200,255], "sound": "/usr/share/sounds/ocean/stereo/bell.oga"}' > $FIFO
+
+# GitHub octocat icon instead of the envelope (the KDE bridge sends this
+# automatically while gitify is the only app with unread notifications)
+echo '{"count": 2, "icon": "github", "silent": true}' > $FIFO
 ```
 
 ## Visualizer
