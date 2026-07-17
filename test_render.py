@@ -10,11 +10,14 @@ from array import array
 
 from timebox_bridge import CLOSED_BY_CALL, CLOSED_DISMISSED, CLOSED_EXPIRED, UnreadTracker
 from timebox_daemon import (
+    _PALETTES,
     _RINGS,
+    _bar_frame,
     _bar_frame_stereo,
     _bs_to_box,
     _clock_payload,
     _frame_heights,
+    _grad,
     _is_frame_ack,
     _tunnel,
     _tunnel_frame,
@@ -337,5 +340,52 @@ t.on_notify(serial=21, app_name="Thunderbird", replaces_id=0)
 assert t.on_reply(21, 6) is True and (t.count, t.icon) == (2, "envelope")
 assert t.on_closed(6, CLOSED_DISMISSED) is True  # mail read: octocat again
 assert (t.count, t.icon) == (1, "github")
+
+# Palettes: the gradient sampler hits its stops, every named palette
+# validates (junk doesn't), the mono color knob round-trips, and switching
+# the palette recolors all modes — loudness palettes by height, frequency
+# palettes by band.
+assert _grad([(0, 0, 0), (255, 255, 255)], 0.0) == (0, 0, 0)
+assert _grad([(0, 0, 0), (255, 255, 255)], 1.0) == (255, 255, 255)
+assert _grad([(0, 0, 0), (10, 20, 30)], 0.5) == (5, 10, 15)
+assert _grad([(0, 0, 0), (200, 0, 0), (0, 0, 200)], 1.0) == (0, 0, 200)
+for name in _PALETTES:
+    assert parse_params({"palette": name})["palette"] == name
+assert "palette" not in parse_params({"palette": "chartreuse"})
+assert parse_params({"color": [10, 20, 30]})["color"] == (10, 20, 30)
+assert "color" not in parse_params({})
+
+# mono paints the knob: a full bar is that solid color, bottom (240) to top (0).
+_vis["palette"], _vis["color"] = "mono", (10, 20, 30)
+bars = _bar_frame([16] + [0] * 15)
+assert bars[240] == (10, 20, 30) and bars[0] == (10, 20, 30)
+
+# Loudness palette (fire): a lit band is non-black and its hue tracks
+# height. Uniform heights + no spin keep the border color position-free.
+_vis["palette"], _vis["spin"] = "fire", 0
+_tunnel["hist"].clear()
+_tunnel["offset"] = 0
+loud = _tunnel_frame([16] * 16)[_RINGS[0][0]]
+_tunnel["hist"].clear()
+quiet = _tunnel_frame([4] * 16)[_RINGS[0][0]]
+assert loud != (0, 0, 0) and loud != quiet
+
+# Frequency palette (synth): hue tracks the band, so distinct bands differ.
+_vis["palette"] = "synth"
+_tunnel["hist"].clear()
+b = _tunnel_frame([16] * 16)
+assert b[_RINGS[0][0]] != b[_RINGS[0][30]]  # band 0 vs band 8
+
+# "auto" (the default) is per-mode: bars render the VU heat, tunnel the
+# rainbow wheel — the same lit band gets a different color in each mode.
+_vis["palette"] = "auto"
+_vis["mode"] = "bars"
+bar = _bar_frame([16] * 16)[240]  # bottom row, quiet end of heat → green-ish
+_vis["mode"] = "tunnel"
+_tunnel["hist"].clear()
+tun = _tunnel_frame([16] * 16)[_RINGS[0][0]]
+assert bar != (0, 0, 0) and tun != (0, 0, 0) and bar != tun
+_vis["mode"], _vis["color"] = "bars", (255, 255, 255)  # restore defaults
+_tunnel["hist"].clear()
 
 print("all checks pass")

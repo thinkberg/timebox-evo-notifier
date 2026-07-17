@@ -105,6 +105,7 @@ echo '{"count": 7, "icon_color": [40,200,255], "sound": "/usr/share/sounds/ocean
 echo '{"visualizer": true}' > $FIFO            # endless, 16 rising bars
 echo '{"visualizer": true, "mode": "wave"}' > $FIFO  # scrolling spectrogram
 echo '{"visualizer": true, "mode": "tunnel"}' > $FIFO  # psychedelic tunnel
+echo '{"visualizer": true, "palette": "fire"}' > $FIFO  # recolor: fire, ocean, bass, synth, mono…
 echo '{"visualizer": false}' > $FIFO           # stop
 ```
 
@@ -142,7 +143,8 @@ All keys (each optional):
 | `bands`        | tunnel analyzer width, 2…60; switchable while running | `60` |
 | `stereo`       | analyze L/R separately: bars mirror bottom (L) / top (R) at half height, tunnel splits into semicircles with the same frequency diametrically opposite, wave enters at the middle and ages outward (L left/down, R right/up); switchable while running | `false` |
 | `dir`          | wave scroll axis: `"h"` — newest column at the right, history drifting left, low bands at the bottom — or `"v"` — newest row on top, falling waterfall, low bands at the left; switchable while running | `"h"` |
-| `palette`      | wave colors: `"rainbow"` — hue names the band, brightness its level (the tunnel look) — or `"heat"` — green quiet, yellow mid, red loud (the bars look); switchable while running | `"rainbow"` |
+| `palette`      | visualizer colors, **every mode**. `"auto"` is each mode's native look (VU bars, rainbow tunnel/wave). Frequency palettes color by band: `"rainbow"` (HSV wheel), `"bass"` (bass→treble, red→violet), `"synth"` (magenta→cyan). Loudness palettes color by level, so peaks hit the hot end: `"heat"` (green→yellow→red VU), `"fire"` (blackbody dark→red→white), `"ocean"` (blue→cyan→white). `"mono"` paints one solid `color`. Switchable while running | `"auto"` |
+| `color`        | base color `[r,g,b]` for the `mono` palette | `[255,255,255]`    |
 | `clock`        | pin the sub-views the box's clock cycles through: list from `"time"`, `"weather"`, `"temp"`, `"date"`, e.g. `{"clock": ["time","weather"]}`; each is a full-screen page (weather: an animated scene) shown ~15 s in turn; replayed whenever the daemon restores the clock | `TIMEBOX_CLOCK` env, or `time,weather` |
 | `clock_color`  | clock color `[r,g,b]` (only with `clock`)  | white              |
 | `clock_flash`  | seconds the clock interrupts a running visualizer per flash; `0` = never | `30` |

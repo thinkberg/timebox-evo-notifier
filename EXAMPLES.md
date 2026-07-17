@@ -84,7 +84,8 @@ line of pixels and drifts across the panel. `fade` sets the trail
 length; `spin`/`bands` don't apply. At 10 fps the panel holds 1.6 s of
 history (0.8 s per side in stereo). `rainbow` tells you *which* band
 is loud by color; `heat` tells you *how* loud and looks the most like
-a classic spectrogram. Anything panned shows up in stereo mode as
+a classic spectrogram — see **Palettes** below for the full set, which
+apply to every mode. Anything panned shows up in stereo mode as
 asymmetry between the two halves.
 
 ```bash
@@ -112,6 +113,33 @@ echo '{"visualizer": true, "mode": "wave", "stereo": true, "dir": "v"}' > $FIFO
 
 # Heat + stereo + long trail: a slow two-sided ember field
 echo '{"visualizer": true, "mode": "wave", "stereo": true, "palette": "heat", "fade": 0.97}' > $FIFO
+```
+
+### Palettes
+
+`palette` recolors every mode. `"auto"` — the default — keeps each
+mode's signature look (VU bars, rainbow tunnel/wave). The rest fall in
+two families: **frequency** palettes color by band (which frequency is
+loud), **loudness** palettes color by level (how loud) so the peaks
+light the hot end. `mono` paints one solid `color`, brightness by
+loudness.
+
+```bash
+# Frequency — color = which band: rainbow wheel, bass→treble, magenta→cyan
+echo '{"visualizer": true, "palette": "rainbow"}' > $FIFO
+echo '{"visualizer": true, "palette": "bass"}' > $FIFO
+echo '{"visualizer": true, "palette": "synth"}' > $FIFO
+
+# Loudness — color = how loud: VU meter, flames, cool water
+echo '{"visualizer": true, "palette": "heat"}' > $FIFO
+echo '{"visualizer": true, "palette": "fire"}' > $FIFO
+echo '{"visualizer": true, "palette": "ocean"}' > $FIFO
+
+# One solid color, brightness by loudness — pick it with `color`
+echo '{"visualizer": true, "palette": "mono", "color": [0,200,255]}' > $FIFO
+
+# Back to each mode's native look
+echo '{"visualizer": true, "palette": "auto"}' > $FIFO
 ```
 
 ## Clock

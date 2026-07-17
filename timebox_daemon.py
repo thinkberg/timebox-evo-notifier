@@ -195,8 +195,10 @@ def parse_params(raw: dict) -> dict:
         p["stereo"] = bool(raw["stereo"])
     if raw.get("dir") in ("h", "v"):  # wave scroll axis
         p["dir"] = raw["dir"]
-    if raw.get("palette") in ("rainbow", "heat"):  # wave colors
+    if raw.get("palette") in _PALETTES:  # visualizer colors, every mode
         p["palette"] = raw["palette"]
+    if "color" in raw:  # base color for the mono palette
+        p["color"] = _color(raw, "color", (255, 255, 255))
     if "clock" in raw:
         try:
             views = [v for v in raw["clock"] if v in _CLOCK_VIEWS]
@@ -274,20 +276,68 @@ def _frame_heights(samples, peak, freqs, rows, stereo):
     return (hl, hr), peak
 
 
-def _bar_color(row: int, rows: int) -> RGB:
-    # green low, yellow mid, red top — same proportions at any height
-    if row * 16 < rows * 9:
-        return (0, 220, 60)
-    if row * 16 < rows * 13:
-        return (240, 200, 0)
-    return (255, 40, 40)
+# Palettes, all wired into every mode via _palette_color. Loudness
+# palettes (heat/fire/ocean) take their color from a pixel's level (bar
+# height / band loudness) so the peaks drive the hue; frequency palettes
+# (bass/synth) take it from the band so pitch does. rainbow stays an HSV
+# wheel; mono paints the live `color` knob. All high-contrast — the
+# 32-step panel quantization (_q32) crushes subtle ramps into mud.
+_GRADIENTS: dict[str, list[RGB]] = {
+    "heat":  [(0, 220, 60), (240, 200, 0), (255, 40, 40)],       # VU green→red
+    "fire":  [(0, 0, 0), (170, 0, 0), (255, 90, 0), (255, 200, 40),
+              (255, 255, 220)],                                  # blackbody
+    "ocean": [(0, 0, 40), (0, 90, 200), (0, 210, 230), (210, 255, 255)],
+    "bass":  [(255, 30, 0), (255, 200, 0), (40, 220, 60), (0, 120, 255),
+              (150, 0, 255)],                                    # bass→treble
+    "synth": [(255, 0, 200), (120, 0, 255), (0, 210, 255)],      # magenta→cyan
+}
+_LOUDNESS_PALETTES = frozenset({"heat", "fire", "ocean"})
+# "auto" (the default) is each mode's signature look: the VU heat on bars,
+# the rainbow wheel on tunnel/wave. A set palette overrides it everywhere.
+_PALETTES = ("auto", "rainbow", "mono", *_GRADIENTS)
+
+
+def _grad(stops: list[RGB], t: float) -> RGB:
+    """Sample a multi-stop gradient at t in [0, 1]."""
+    t = min(1.0, max(0.0, t)) * (len(stops) - 1)
+    i = int(t)
+    if i >= len(stops) - 1:
+        return stops[-1]
+    a, b, f = stops[i], stops[i + 1], t - i
+    return (int(a[0] + (b[0] - a[0]) * f),
+            int(a[1] + (b[1] - a[1]) * f),
+            int(a[2] + (b[2] - a[2]) * f))
+
+
+def _palette_color(band: int, nb: int, level: float) -> RGB:
+    """Full-brightness palette color for one pixel: `band`/`nb` give its
+    frequency slot, `level` (0-1) its loudness, and the palette picks which
+    axis drives the hue. Callers dim by loudness where the position is
+    fixed (tunnel/wave); bars stay full-bright since height already shows
+    loudness, so `level` there is just the pixel's spot up the bar."""
+    pal = _vis["palette"]
+    if pal == "auto":  # each mode's signature look
+        pal = "heat" if _vis["mode"] == "bars" else "rainbow"
+    if pal == "rainbow":
+        r, g, b = colorsys.hsv_to_rgb(band / max(1, nb), 1.0, 1.0)
+        return (int(255 * r), int(255 * g), int(255 * b))
+    if pal == "mono":
+        return _vis["color"]
+    t = level if pal in _LOUDNESS_PALETTES else band / max(1, nb - 1)
+    return _grad(_GRADIENTS[pal], t)
+
+
+def _dim(c: RGB, level: float) -> RGB:
+    """Scale a color by loudness; sqrt lifts quiet bands into visibility."""
+    b = math.sqrt(min(1.0, max(0.0, level)))
+    return (int(c[0] * b), int(c[1] * b), int(c[2] * b))
 
 
 def _bar_frame(heights: list[int]) -> list[RGB]:
     pixels: list[RGB] = [(0, 0, 0)] * 256
     for x, h in enumerate(heights):
-        for row in range(h):  # row 0 = bottom
-            pixels[(15 - row) * 16 + x] = _bar_color(row, 16)
+        for row in range(h):  # row 0 = bottom; level = spot up the bar
+            pixels[(15 - row) * 16 + x] = _palette_color(x, 16, (row + 1) / 16)
     return pixels
 
 
@@ -297,9 +347,9 @@ def _bar_frame_stereo(left: list[int], right: list[int]) -> list[RGB]:
     pixels: list[RGB] = [(0, 0, 0)] * 256
     for x in range(16):
         for row in range(left[x]):
-            pixels[(15 - row) * 16 + x] = _bar_color(row, 8)
+            pixels[(15 - row) * 16 + x] = _palette_color(x, 16, (row + 1) / 8)
         for row in range(right[x]):
-            pixels[row * 16 + x] = _bar_color(row, 8)
+            pixels[row * 16 + x] = _palette_color(x, 16, (row + 1) / 8)
     return pixels
 
 
@@ -323,9 +373,8 @@ _tunnel: dict = {"hist": deque(maxlen=len(_RINGS)), "offset": 0}
 
 
 def _tunnel_color(band: int, nb: int, height: int) -> RGB:
-    # sqrt lifts quiet bands into visibility; 0 stays black
-    r, g, b = colorsys.hsv_to_rgb(band / nb, 1.0, math.sqrt(height / 16))
-    return (int(255 * r), int(255 * g), int(255 * b))
+    # hue from the palette, brightness from loudness; height 0 stays black
+    return _dim(_palette_color(band, nb, height / 16), height / 16)
 
 
 def _tunnel_frame(heights: list[int]) -> list[RGB]:
@@ -393,8 +442,6 @@ def _clear_vis_history() -> None:
 
 
 def _wave_color(band: int, height: int) -> RGB:
-    if _vis["palette"] == "heat":  # loudness only; the position names the band
-        return _bar_color(height - 1, 16) if height else (0, 0, 0)
     return _tunnel_color(band, VIS_BANDS, height)
 
 
@@ -501,8 +548,8 @@ class StaticOverlay:
 # loop-clock deadline until which the clock owns the panel (weather_loop).
 _vis: dict = {"task": None, "overlay": None, "mode": "bars", "stereo": False,
               "spin": TUNNEL_SPIN, "fade": TUNNEL_FADE,
-              "bands": len(_RINGS[0]), "dir": "h", "palette": "rainbow",
-              "flash_until": 0.0}
+              "bands": len(_RINGS[0]), "dir": "h", "palette": "auto",
+              "color": (255, 255, 255), "flash_until": 0.0}
 
 
 def _sink_running() -> bool:
@@ -620,6 +667,7 @@ async def visualize(params: dict) -> None:
     sent = 0
     quiet = 0
     waiting = False  # capture paused/lost; log the resume once, not per retry
+    flashing = False  # clock-flash window: switch to the clock once, not per frame
     _clear_vis_history()
     print(f"visualizer started ({seconds}s)" if seconds
           else 'visualizer started (endless — stop with {"visualizer": false})',
@@ -709,12 +757,23 @@ async def visualize(params: dict) -> None:
                                 if _vis["overlay"] is None:
                                     await _restore_clock(client)
                             continue
-                    # Clock flash: the clock owns the panel; keep draining
-                    # audio, skip the writes. A notification overrides it.
+                    # Clock flash: hand the panel to the box's clock, then
+                    # keep draining audio while skipping the writes so the
+                    # box cycles time/weather on its own. Sending the switch
+                    # HERE (not from weather_loop) serialises it with the
+                    # frame pushes in this one coroutine — otherwise a frame
+                    # already committed before the window opened lands after
+                    # the switch and the box sticks on it for the whole
+                    # window. A notification overrides the flash (and resets
+                    # flashing below, so the clock is re-asserted after it).
                     if (_vis["overlay"] is None and
                             asyncio.get_running_loop().time()
                             < _vis["flash_until"]):
+                        if not flashing:
+                            flashing = True
+                            await _restore_clock(client)
                         continue
+                    flashing = False
                     # One read per frame: a live mode/stereo switch during
                     # the to_thread await must not mismatch heights/renderer.
                     mode, stereo = _vis["mode"], _vis["stereo"]
@@ -819,10 +878,12 @@ async def weather_loop() -> None:
 
     Every _weather["every"] seconds: re-push temperature/condition
     (re-pushing covers a power-cycled box that lost them) and, if the
-    visualizer holds the panel, show the clock for _weather["flash"]
-    seconds — the visualizer skips its writes for that window and simply
-    repaints afterwards. The idle panel shows the clock anyway. Redialing
-    via ensure_le() doubles as the idle daemon's link self-healing.
+    visualizer holds the panel, arm a clock-flash window of
+    _weather["flash"] seconds — the visualizer hands the panel to the
+    clock and skips its writes for that window, letting the box cycle
+    time/weather on its own, then repaints afterwards. The idle panel
+    shows the clock anyway. Redialing via ensure_le() doubles as the
+    idle daemon's link self-healing.
     """
     latlon = os.environ.get("TIMEBOX_LATLON")
     if not latlon:
@@ -849,9 +910,11 @@ async def weather_loop() -> None:
                         bytes([0x5F, temp & 0xFF, icon])), 5)
             vis_running = _vis["task"] is not None and not _vis["task"].done()
             if vis_running and _weather["flash"] > 0:
+                # Only arm the window; the visualizer switches to the clock
+                # itself so the switch can't race an in-flight frame onto
+                # the panel and leave the box stuck on it.
                 _vis["flash_until"] = (asyncio.get_running_loop().time()
                                        + _weather["flash"])
-                await _restore_clock(client)
                 print(f"clock flash ({_weather['flash']}s)", flush=True)
             elif not vis_running:
                 # Idle: re-assert the clock. The box's hardware button and
@@ -954,14 +1017,15 @@ async def handle(client, params: dict) -> None:
             _vis["fade"] = params.get("fade", TUNNEL_FADE)
             _vis["bands"] = params.get("bands", len(_RINGS[0]))
             _vis["dir"] = params.get("dir", "h")
-            _vis["palette"] = params.get("palette", "rainbow")
+            _vis["palette"] = params.get("palette", "auto")
+            _vis["color"] = params.get("color", (255, 255, 255))
             _vis["task"] = _spawn(visualize(params), "visualizer")
         elif not params["visualizer"] and vis_running:
             _vis["task"].cancel()
         elif params["visualizer"]:
             changed = []
             for key in ("mode", "spin", "fade", "bands", "stereo", "dir",
-                        "palette"):
+                        "palette", "color"):
                 if params.get(key, _vis[key]) != _vis[key]:
                     _vis[key] = params[key]
                     changed.append(f"{key}: {params[key]}")
