@@ -148,6 +148,7 @@ echo '{"visualizer": true, "palette": "auto"}' > $FIFO
 # Pin which pages the box's clock cycles through (~15 s each)
 echo '{"clock": ["time", "weather"]}' > $FIFO
 echo '{"clock": ["time"], "clock_color": [255,180,0]}' > $FIFO  # steady amber clock
+echo '{"clock_face": "analog"}' > $FIFO  # round analog face ("digital" switches back)
 
 # While the visualizer runs, give the clock 30 s of air time every 10 min
 echo '{"clock_flash": 30, "clock_every": 600}' > $FIFO

@@ -147,6 +147,7 @@ All keys (each optional):
 | `color`        | base color `[r,g,b]` for the `mono` palette | `[255,255,255]`    |
 | `clock`        | pin the sub-views the box's clock cycles through: list from `"time"`, `"weather"`, `"temp"`, `"date"`, e.g. `{"clock": ["time","weather"]}`; each is a full-screen page (weather: an animated scene) shown ~15 s in turn; replayed whenever the daemon restores the clock | `TIMEBOX_CLOCK` env, or `time,weather` |
 | `clock_color`  | clock color `[r,g,b]` (only with `clock`)  | white              |
+| `clock_face`   | clock style: `"digital"`, `"analog"` (round), `"analog-square"`, `"rainbow"`, `"boxed"`, `"digital-inverted"` | `TIMEBOX_CLOCK_FACE` env, or `digital` |
 | `clock_flash`  | seconds the clock interrupts a running visualizer per flash; `0` = never | `30` |
 | `clock_every`  | seconds between clock flashes (also the weather re-push cadence); applies from the next cycle | `600` |
 

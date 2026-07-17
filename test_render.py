@@ -15,6 +15,7 @@ from timebox_daemon import (
     _bar_frame,
     _bar_frame_stereo,
     _bs_to_box,
+    _CLOCK_FACES,
     _clock_payload,
     _frame_heights,
     _grad,
@@ -289,10 +290,15 @@ assert _bs_to_box("dry", None) == 3
 # The 5F payload carries °C as a signed byte.
 assert bytes([0x5F, -3 & 0xFF, 6]) == b"\x5f\xfd\x06"
 
-# Clock sub-views: 45 00 01 layout (node-divoom-timebox-evo), fullscreen
-# face, flags in time/weather/temp/date order, then the color.
+# Clock sub-views: 45 00 01 layout (node-divoom-timebox-evo), face byte,
+# flags in time/weather/temp/date order, then the color.
 assert _clock_payload(["time", "weather"], (255, 0, 0)) == bytes(
     [0x45, 0x00, 0x01, 0x00, 1, 1, 0, 0, 255, 0, 0])
+assert _clock_payload(["time"], (255, 255, 255), _CLOCK_FACES["analog"]) == bytes(
+    [0x45, 0x00, 0x01, 0x05, 1, 0, 0, 0, 255, 255, 255])
+assert parse_params({"clock_face": "analog"})["clock_face"] == "analog"
+assert "clock_face" not in parse_params({"clock_face": "cuckoo"})
+assert "clock_face" not in parse_params({"clock_face": ["analog"]})  # unhashable
 p = parse_params({"clock": ["date", "bogus", "time"], "clock_color": [0, 300, -5]})
 assert p["clock"] == ["date", "time"] and p["clock_color"] == (0, 255, 0)
 assert parse_params({"clock": "junk"})["clock"] == ["time"]  # chars, none valid

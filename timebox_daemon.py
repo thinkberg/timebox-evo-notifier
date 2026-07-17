@@ -29,6 +29,9 @@ when idle, and replayed whenever the daemon restores the clock.
 Each view is a full-screen page the box cycles through (~15 s each);
 the weather page is an animated scene. Default from TIMEBOX_CLOCK
 (comma-separated), falling back to time,weather.
+clock_face picks the clock style: "digital" (default), "analog",
+"analog-square", "rainbow", "boxed", "digital-inverted". Default from
+TIMEBOX_CLOCK_FACE.
 clock_flash/clock_every (seconds) let the clock interrupt a running
 visualizer: flash seconds of clock every every seconds (defaults 30
 and 600; flash 0 turns it off).
@@ -206,6 +209,8 @@ def parse_params(raw: dict) -> dict:
             views = []
         p["clock"] = views or ["time"]  # a clock with nothing on it helps nobody
         p["clock_color"] = _color(raw, "clock_color", (255, 255, 255))
+    if isinstance(raw.get("clock_face"), str) and raw["clock_face"] in _CLOCK_FACES:
+        p["clock_face"] = raw["clock_face"]
     if "clock_flash" in raw:
         try:  # seconds the clock interrupts a running visualizer; 0 = never
             p["clock_flash"] = min(300, max(0, int(raw["clock_flash"])))
@@ -576,25 +581,32 @@ def _sink_running() -> bool:
     return False
 
 
-def _clock_payload(views: list[str], color: RGB) -> bytes:
-    """Clock-channel switch pinning its sub-views (45 00 01 layout, per
-    node-divoom-timebox-evo, state-dump-verified against this firmware);
-    the face stays fullscreen."""
+def _clock_payload(views: list[str], color: RGB, face: int = 0) -> bytes:
+    """Clock-channel switch pinning face + sub-views (45 00 01 layout, per
+    node-divoom-timebox-evo, state-dump-verified against this firmware)."""
     flags = [v in views for v in ("time", "weather", "temp", "date")]
-    return bytes([0x45, 0x00, 0x01, 0x00, *flags, *color])
+    return bytes([0x45, 0x00, 0x01, face, *flags, *color])
 
 
 # The clock command replayed on every restore ({"clock": [...]} swaps it).
 # Always explicit flags — the bare 45 00 RESETS the box's stored sub-views
 # (probed via 0x46 state dumps). Each enabled view is a full-screen page
 # the box cycles through (~15 s); the weather page is an animated scene.
-# TIMEBOX_CLOCK ("time,weather") sets the boot default so it survives
-# daemon restarts; the FIFO key changes it live.
+# TIMEBOX_CLOCK ("time,weather") / TIMEBOX_CLOCK_FACE ("analog") set the
+# boot defaults so they survive daemon restarts; the FIFO keys change
+# them live.
 _CLOCK_VIEWS = ("time", "weather", "temp", "date")
-_clock: dict = {"payload": _clock_payload(
-    [v for v in os.environ.get("TIMEBOX_CLOCK", "time,weather").split(",")
-     if v in _CLOCK_VIEWS] or ["time"],
-    (255, 255, 255))}
+# FACE byte → clock style (node-divoom TimeType names). 0/3/5 verified by
+# 0x46 readback on this firmware (TBX-26-013); 1/2/4 community-documented.
+_CLOCK_FACES = {"digital": 0, "rainbow": 1, "boxed": 2,
+                "analog-square": 3, "digital-inverted": 4, "analog": 5}
+_clock: dict = {
+    "views": [v for v in os.environ.get("TIMEBOX_CLOCK", "time,weather").split(",")
+              if v in _CLOCK_VIEWS] or ["time"],
+    "color": (255, 255, 255),
+    "face": _CLOCK_FACES.get(os.environ.get("TIMEBOX_CLOCK_FACE", "digital"), 0),
+}
+_clock["payload"] = _clock_payload(_clock["views"], _clock["color"], _clock["face"])
 
 
 async def _restore_clock(client) -> None:
@@ -990,16 +1002,22 @@ async def handle(client, params: dict) -> None:
 
     vis_running = _vis["task"] is not None and not _vis["task"].done()
 
-    if any(k in params for k in ("clock", "clock_flash", "clock_every")):
+    if any(k in params for k in ("clock", "clock_face", "clock_flash", "clock_every")):
         changed = []
         if "clock" in params:
-            _clock["payload"] = _clock_payload(params["clock"],
-                                               params["clock_color"])
+            _clock["views"] = params["clock"]
+            _clock["color"] = params["clock_color"]
+            changed.append(f"views: {', '.join(params['clock'])}")
+        if "clock_face" in params:
+            _clock["face"] = _CLOCK_FACES[params["clock_face"]]
+            changed.append(f"face: {params['clock_face']}")
+        if "clock" in params or "clock_face" in params:
+            _clock["payload"] = _clock_payload(_clock["views"], _clock["color"],
+                                               _clock["face"])
             if not vis_running:  # otherwise the next frame repaints anyway;
                 async with _panel_lock:  # the payload shows on restore
                     await asyncio.wait_for(
                         client.send_raw_payload(_clock["payload"]), 5)
-            changed.append(f"views: {', '.join(params['clock'])}")
         if "clock_flash" in params:
             _weather["flash"] = params["clock_flash"]
             changed.append(f"flash: {params['clock_flash']}s")

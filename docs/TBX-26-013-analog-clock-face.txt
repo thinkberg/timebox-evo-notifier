@@ -1,0 +1,33 @@
+TECHNICAL MEMORANDUM                                         TBX-26-013
+
+SUBJECT:      The clock FACE byte - analog faces verified, and the
+              0x46 dump's mystery byte identified
+DATE:         2026-07-18
+STATUS:       FINAL - verified by state-dump readback (TBX-26-007
+              method: write, dump, diff)
+
+
+SUMMARY. The FACE byte in the clock command (45 00 01 FACE T W P D
+RR GG BB, TBX-26-007 SS2) was always sent as 0x00 (fullscreen digital).
+Probing it settles two things: this firmware honors analog faces, and
+the byte TBX-26-007 left unmapped in the 0x46 state dump is the stored
+face.
+
+1. FACES VERIFIED. Writing face 5 (analog round) and face 3 (analog
+square) per the node-divoom TimeType table, then reading back via
+0x46:
+
+    face=0   ... ff ff ff 00 T W P D SUM
+    face=5   ... ff ff ff 05 T W P D SUM
+    face=3   ... ff ff ff 03 T W P D SUM
+
+Each write lands exactly; sub-view flags and color are untouched. The
+`??` byte between RGB and the sub-view flags in TBX-26-007's partial
+decode is therefore the FACE. Faces 1 (rainbow), 2 (boxed) and
+4 (inverted) were not probed - community-documented only.
+
+2. DISPOSITION. The daemon grew a `clock_face` FIFO key (names per
+node-divoom: digital, rainbow, boxed, analog-square, digital-inverted,
+analog) and a TIMEBOX_CLOCK_FACE env default, folded into the same
+verified 11-byte clock command and replayed on every restore. Payload
+construction is covered in test_render.py.
