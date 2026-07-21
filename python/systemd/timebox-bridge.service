@@ -6,8 +6,8 @@ After=timebox-daemon.service
 [Service]
 # TIMEBOX_ONLY_APPS lists the apps whose notifications reach the box:
 EnvironmentFile=%h/.config/timebox/env
-WorkingDirectory=%h/.local/share/timebox
-ExecStart=%h/.local/share/timebox/.venv/bin/python timebox_bridge.py
+WorkingDirectory=%h/.local/share/timebox/python
+ExecStart=%h/.local/share/timebox/python/.venv/bin/python timebox_bridge.py
 Restart=on-failure
 RestartSec=10
 

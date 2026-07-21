@@ -2,10 +2,11 @@
 
 ## Project map
 
-- `timebox_notify.py` is the shared BLE, audio, and 16×16 rendering library; it also provides the one-shot CLI.
-- `timebox_daemon.py` owns the persistent device links and accepts JSON requests through a private FIFO.
-- `timebox_bridge.py` mirrors allow-listed KDE notification counts to that FIFO. Never forward notification content.
-- `test_render.py` is the framework-free check for pure logic.
+- `python/timebox_notify.py` is the Python reference's shared BLE, audio, and 16×16 rendering library; it also provides the one-shot CLI.
+- `python/timebox_daemon.py` owns the Python reference's persistent device links and accepts JSON requests through a private FIFO.
+- `python/timebox_bridge.py` mirrors KDE notification counts to that FIFO. Never forward notification content.
+- `python/test_render.py` is the Python framework-free check for pure logic.
+- `rust/` is the independent Rust implementation. Keep it free of Python runtime imports and bindings.
 - `docs/REGISTER.md` indexes the engineering memos.
 
 ## Working rules
@@ -18,5 +19,6 @@
 ## Check
 
 ```bash
-.venv/bin/python test_render.py
+.venv/bin/python python/test_render.py
+cargo test --manifest-path rust/Cargo.toml
 ```
