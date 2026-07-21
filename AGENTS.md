@@ -20,5 +20,5 @@
 
 ```bash
 .venv/bin/python python/test_render.py
-cargo test --manifest-path rust/Cargo.toml
+$HOME/.cargo/bin/cargo test --manifest-path rust/Cargo.toml
 ```
