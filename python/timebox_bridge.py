@@ -9,7 +9,10 @@ Only the COUNT (and which badge icon to wear: an octocat head while gitify
 is the only unread source, the envelope otherwise) is sent to the box —
 never notification text. The box's BLE link is unencrypted, so anything
 displayed is readable by a sniffer in radio range; a bare number leaks
-nothing. Notification content is never logged either.
+nothing. Notification content is never logged either. One narrow exception
+to the never-read-content rule: a gitify batch notification (title
+"Gitify", body "You have N notifications") has its N extracted so the
+badge shows gitify's real count — only that integer is kept.
 
 Config (~/.config/timebox/env):
     TIMEBOX_ONLY_APPS=Thunderbird,Nextcloud   # nothing is forwarded if empty
@@ -19,6 +22,7 @@ Run:  TIMEBOX_ONLY_APPS=... python timebox_bridge.py
 
 import asyncio
 import os
+import re
 import sys
 
 from dbus_fast import BusType, Message, MessageType
@@ -45,6 +49,20 @@ def allowed_apps() -> set[str]:
     return {a.strip().lower() for a in raw.split(",") if a.strip()}
 
 
+def _batch_count(summary: str, body: str) -> int:
+    """How many notifications this one desktop notification stands for.
+
+    Gitify batches new notifications into a single popup titled "Gitify"
+    (its brand constant, locale-invariant) whose body carries the count.
+    Any other title means a single notification whose body is an arbitrary
+    subject title — its digits ("Fix #123") must not be read as a count.
+    """
+    if summary != "Gitify":
+        return 1
+    m = re.search(r"\d+", body)
+    return min(99, max(1, int(m.group()))) if m else 1
+
+
 class UnreadTracker:
     """Which allow-listed notifications are still unread.
 
@@ -56,26 +74,32 @@ class UnreadTracker:
 
     def __init__(self, allowed: set[str]) -> None:
         self.allowed = allowed
-        self.unread: dict[int, str] = {}  # notification id -> app (lowercased)
-        self._pending: dict[int, tuple[str, int]] = {}  # serial -> (app, replaces_id)
+        # notification id -> (app lowercased, how many it stands for)
+        self.unread: dict[int, tuple[str, int]] = {}
+        # serial -> (app, replaces_id, weight)
+        self._pending: dict[int, tuple[str, int, int]] = {}
 
-    def on_notify(self, serial: int, app_name: str, replaces_id: int) -> None:
+    def on_notify(self, serial: int, app_name: str, replaces_id: int,
+                  summary: str, body: str) -> None:
         app = app_name.lower()
         if app not in self.allowed:
             return
-        self._pending[serial] = (app, replaces_id)
+        self._pending[serial] = (app, replaces_id, _batch_count(summary, body))
 
     def on_reply(self, reply_serial: int, notification_id: int) -> bool:
         """Returns True if the unread count changed."""
         pending = self._pending.pop(reply_serial, None)
         if pending is None:
             return False  # not one of ours
-        app, replaces_id = pending
+        app, replaces_id, weight = pending
         if replaces_id and replaces_id in self.unread:
-            return False  # an update of an existing notification, not a new one
-        before = len(self.unread)
-        self.unread[notification_id] = app
-        return len(self.unread) != before
+            # An update of an existing notification: refresh its weight.
+            before = self.unread[replaces_id]
+            self.unread[replaces_id] = (app, weight)
+            return self.unread[replaces_id] != before
+        before_count = self.count
+        self.unread[notification_id] = (app, weight)
+        return self.count != before_count
 
     def on_closed(self, notification_id: int, reason: int) -> bool:
         """Returns True if the unread count changed."""
@@ -86,7 +110,7 @@ class UnreadTracker:
 
     @property
     def count(self) -> int:
-        return len(self.unread)
+        return sum(weight for _, weight in self.unread.values())
 
     @property
     def icon(self) -> str:
@@ -94,7 +118,8 @@ class UnreadTracker:
         the envelope whenever any other app has unread (envelope wins)."""
         # ponytail: hardcoded app→icon; grow a map when a third app wants one
         return ("github" if self.unread
-                and set(self.unread.values()) == {"gitify"} else "envelope")
+                and {app for app, _ in self.unread.values()} == {"gitify"}
+                else "envelope")
 
 
 # What the panel is currently showing, as far as we know, as (count, icon).
@@ -158,9 +183,10 @@ async def main() -> None:
                 and msg.interface == "org.freedesktop.Notifications"
                 and msg.member == "Notify"):
             # Notify(app_name, replaces_id, icon, summary, body, actions, hints, timeout)
-            # Only app_name and replaces_id are ever read — content stays untouched.
-            app_name, replaces_id = msg.body[0], msg.body[1]
-            tracker.on_notify(msg.serial, app_name, replaces_id)
+            # Content is only read to extract gitify's batch count (see
+            # _batch_count); nothing of it is stored, forwarded, or logged.
+            tracker.on_notify(msg.serial, msg.body[0], msg.body[1],
+                              msg.body[3], msg.body[4])
         elif msg.message_type == MessageType.METHOD_RETURN and msg.body:
             changed = tracker.on_reply(msg.reply_serial, msg.body[0])
         elif (msg.message_type == MessageType.SIGNAL

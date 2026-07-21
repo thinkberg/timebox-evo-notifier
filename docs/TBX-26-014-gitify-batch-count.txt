@@ -1,0 +1,60 @@
+TECHNICAL MEMORANDUM                                         TBX-26-014
+
+SUBJECT:      Gitify batch counts - the badge shows gitify's reported
+              number, parsed off its locale-invariant popup title
+DATE:         2026-07-21
+STATUS:       FINAL
+
+SUMMARY. The badge counted distinct desktop notifications, and gitify
+posts exactly one popup per poll no matter how many GitHub
+notifications arrived - so the octocat badge sat at 1 while gitify
+said 4. The real number only exists inside the popup: gitify's
+native.ts emits title "Gitify" + body "You have N notifications" for
+a batch, and title <repo full name> + body <subject title> for a
+single one. The tracker now stores a weight per unread id and reports
+the sum: a popup titled "Gitify" weighs the first integer found in
+its body (clamped 1..99), everything else weighs 1.
+
+1. DESIGN.
+
+   1.1 Language-independent anchor. The batch is detected by summary
+   == "Gitify" - the APPLICATION.NAME brand constant, which survives
+   any future localization of the body text - not by matching the
+   English wording. Gated that way, a bare first-integer search on
+   the body is safe: the single-notification case (arbitrary subject
+   titles like "Fix #123") never carries the "Gitify" title, so its
+   digits are never read as a count. N is gitify's new-since-last-poll
+   diff, not its total; summing unread weights approximates the total
+   under the existing unread-until-dismissed model.
+
+   1.2 Tracker. unread maps id -> (app, weight); count sums weights;
+   the replaces_id path, which previously early-returned as "update,
+   not new", now refreshes the weight in place and reports a change
+   when it differs. Change detection compares the summed count, so
+   the daemon push fires exactly when the badge would change.
+
+   1.3 Policy. This is a narrow, deliberate exception to the
+   never-read-content rule (TBX-26-003/012): the bridge compares one
+   summary string against "Gitify" and keeps one integer from the
+   body. Nothing of the text is stored, forwarded, or logged; what
+   crosses the unencrypted BLE link is still a bare number, so the
+   sniffer threat model is unchanged. Documented in the bridge
+   docstring and README security notes.
+
+   1.4 Rust port. bridge.rs mirrors the same contract dependency-free
+   (char-scan instead of a regex crate), tests included.
+
+2. TRAPS.
+
+   2.1 Electron field mapping. Electron maps notification title ->
+   D-Bus summary (arg 3) and body -> body (arg 4). Anchoring on the
+   title therefore means msg.body[3], not the app_name in body[0]
+   (which is "gitify" for both popup shapes and cannot distinguish
+   them).
+
+3. DISPOSITION. Runnable checks (test_render.py, cargo test): batch
+popup -> weight N, subject title with digits -> 1, batches summing,
+replaces-update refreshing the weight (and staying silent when equal),
+dismissal clearing the batch. Live on hardware: driven via notify-send
+-a gitify with "Gitify"-titled batch bodies - badge showed the parsed
+counts, summed a second batch, and cleared on dismissal.

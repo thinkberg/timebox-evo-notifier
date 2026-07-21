@@ -318,17 +318,20 @@ assert not _is_frame_ack(b"")  # short frame must not match
 # KDE bridge: only allow-listed apps count (case-insensitive); an id is only
 # unread once its Notify call has returned; replaces_id means "update", not a
 # new notification; dismissing clears it, merely expiring does not.
+def notify(t, serial, app, replaces=0, summary="", body=""):
+    t.on_notify(serial, app, replaces, summary, body)
+
 t = UnreadTracker({"thunderbird"})
 
-t.on_notify(serial=10, app_name="Signal", replaces_id=0)  # not allow-listed
+notify(t, 10, "Signal")  # not allow-listed
 assert t.on_reply(10, 900) is False and t.count == 0
 
-t.on_notify(serial=11, app_name="ThunderBird", replaces_id=0)  # case-insensitive
+notify(t, 11, "ThunderBird")  # case-insensitive
 assert t.on_reply(11, 1) is True and t.count == 1
-t.on_notify(serial=12, app_name="Thunderbird", replaces_id=0)
+notify(t, 12, "Thunderbird")
 assert t.on_reply(12, 2) is True and t.count == 2
 
-t.on_notify(serial=13, app_name="Thunderbird", replaces_id=2)  # update of id 2
+notify(t, 13, "Thunderbird", replaces=2)  # update of id 2
 assert t.on_reply(13, 2) is False and t.count == 2
 
 assert t.on_closed(1, CLOSED_EXPIRED) is False and t.count == 2  # still unread
@@ -340,12 +343,26 @@ assert t.on_closed(2, CLOSED_DISMISSED) is False  # already gone, no re-fire
 # unread mail brings the envelope back (envelope wins); empty = envelope.
 t = UnreadTracker({"thunderbird", "gitify"})
 assert t.icon == "envelope"
-t.on_notify(serial=20, app_name="gitify", replaces_id=0)
+notify(t, 20, "gitify")
 assert t.on_reply(20, 5) is True and (t.count, t.icon) == (1, "github")
-t.on_notify(serial=21, app_name="Thunderbird", replaces_id=0)
+notify(t, 21, "Thunderbird")
 assert t.on_reply(21, 6) is True and (t.count, t.icon) == (2, "envelope")
 assert t.on_closed(6, CLOSED_DISMISSED) is True  # mail read: octocat again
 assert (t.count, t.icon) == (1, "github")
+
+# Gitify batch counts: a popup titled "Gitify" stands for the number in its
+# body; any other title is a single notification even if its subject has
+# digits; batches sum; a replaces-update refreshes the weight in place.
+t = UnreadTracker({"gitify"})
+notify(t, 30, "gitify", summary="Gitify", body="You have 4 notifications")
+assert t.on_reply(30, 7) is True and t.count == 4
+notify(t, 31, "gitify", summary="me/repo", body="Fix #123")  # subject title
+assert t.on_reply(31, 8) is True and t.count == 5
+notify(t, 32, "gitify", replaces=7, summary="Gitify", body="You have 2 notifications")
+assert t.on_reply(32, 7) is True and t.count == 3  # weight 4 -> 2
+notify(t, 33, "gitify", replaces=7, summary="Gitify", body="You have 2 notifications")
+assert t.on_reply(33, 7) is False and t.count == 3  # unchanged, no re-fire
+assert t.on_closed(7, CLOSED_DISMISSED) is True and t.count == 1
 
 # Palettes: the gradient sampler hits its stops, every named palette
 # validates (junk doesn't), the mono color knob round-trips, and switching

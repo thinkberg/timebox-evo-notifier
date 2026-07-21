@@ -18,5 +18,6 @@ same change as the memo file.
 | [TBX-26-011](TBX-26-011-wave-visualizer.txt) | Wave visualizer — scrolling spectrogram, axis/palette knobs, stereo center-out | 2026-07-16 | FINAL |
 | [TBX-26-012](TBX-26-012-gitify-octocat-icon.txt) | Per-source badge icons — octocat for gitify, envelope wins when mixed | 2026-07-16 | FINAL |
 | [TBX-26-013](TBX-26-013-analog-clock-face.txt) | Clock FACE byte — analog faces verified, dump byte identified | 2026-07-18 | FINAL |
+| [TBX-26-014](TBX-26-014-gitify-batch-count.txt) | Gitify batch counts — badge shows the reported N, title-anchored parse | 2026-07-21 | FINAL |
 | [TS-26-001](TS-26-001-audio-delivery-trade-study.txt) | Audio delivery through the box speaker — trade study | 2026-07-12 | FINAL |
 | [TS-26-002](TS-26-002-code-production-quality-trade-study.txt) | AI-agent code production without upfront security rules | 2026-07-12 | FINAL |

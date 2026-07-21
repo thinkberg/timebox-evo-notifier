@@ -40,9 +40,9 @@ bluetoothctl trust $TIMEBOX_ADDRESS
 # pairing prompts automatically (default: 0000):
 export TIMEBOX_PIN=<your-pin>
 
-# 4. Python environment
-python -m venv .venv
-.venv/bin/pip install bleak dbus_fast divoom_protocol
+# 4. Python reference environment
+python -m venv python/.venv
+python/.venv/bin/pip install bleak dbus_fast divoom_protocol
 ```
 
 ## Daemon (recommended)
@@ -51,7 +51,7 @@ Connects once, holds both links, serves notifications from a FIFO
 with sub-second latency:
 
 ```bash
-.venv/bin/python timebox_daemon.py &
+python/.venv/bin/python python/timebox_daemon.py &
 ```
 
 ### Install as a systemd user service
@@ -63,14 +63,14 @@ mkdir -p ~/.config/timebox
 printf 'TIMEBOX_ADDRESS=<box-mac>\nTIMEBOX_PIN=<pin>\nTIMEBOX_LATLON=<lat>,<lon>\n' > ~/.config/timebox/env
 chmod 600 ~/.config/timebox/env
 
-# App + venv into ~/.local/share/timebox
-mkdir -p ~/.local/share/timebox
-cp timebox_daemon.py timebox_bridge.py timebox_notify.py ~/.local/share/timebox/
-python -m venv ~/.local/share/timebox/.venv
-~/.local/share/timebox/.venv/bin/pip install bleak dbus_fast divoom_protocol
+# Python reference + venv into ~/.local/share/timebox/python
+mkdir -p ~/.local/share/timebox/python
+cp python/timebox_daemon.py python/timebox_bridge.py python/timebox_notify.py ~/.local/share/timebox/python/
+python -m venv ~/.local/share/timebox/python/.venv
+~/.local/share/timebox/python/.venv/bin/pip install bleak dbus_fast divoom_protocol
 
 # Unit into ~/.config/systemd/user, then enable and start
-cp timebox-daemon.service ~/.config/systemd/user/
+cp python/systemd/timebox-daemon.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now timebox-daemon
 
@@ -79,7 +79,7 @@ journalctl --user -u timebox-daemon -f
 systemctl --user status timebox-daemon
 ```
 
-The units run the copy in `~/.local/share/timebox` — adjust
+The Python units run the copy in `~/.local/share/timebox/python` — adjust
 `WorkingDirectory`/`ExecStart` in the `.service` files if you install
 elsewhere. The daemon restarts automatically (15 s backoff) if the
 box is unreachable.
@@ -181,7 +181,7 @@ hardware button finds its way back within one cycle.
 
 ## KDE notifications on the box
 
-`timebox_bridge.py` mirrors KDE's notification bell: allow-listed apps bump an
+`python/timebox_bridge.py` mirrors KDE's notification bell: allow-listed apps bump an
 unread **count badge** on the panel (envelope + number). It listens on the
 session bus, so KDE's own notifications keep working untouched — and only the
 count is ever sent to the box, never the message text.
@@ -192,7 +192,7 @@ count is ever sent to the box, never the message text.
 #   dbus-monitor --session "interface='org.freedesktop.Notifications'"
 echo 'TIMEBOX_ONLY_APPS=Thunderbird,Nextcloud' >> ~/.config/timebox/env
 
-cp timebox-bridge.service ~/.config/systemd/user/
+cp python/systemd/timebox-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now timebox-bridge
 journalctl --user -u timebox-bridge -f
@@ -207,6 +207,11 @@ The badge icon names the source: an octocat head while gitify is the only
 app with unread notifications, the envelope otherwise (any unread mail
 wins — deterministic, no flip-flopping while both are pending).
 
+Gitify batches new GitHub notifications into a single popup ("You have N
+notifications"); the badge shows that N — parsed from the popup, keyed off
+its locale-invariant "Gitify" title — instead of counting the popup as one.
+Unread batches add up until dismissed, like any other notification.
+
 How it works and why it eavesdrops rather than replaces KDE's notification
 daemon: [TBX-26-003](docs/TBX-26-003-kde-notification-bridge.txt).
 
@@ -217,9 +222,9 @@ notification to it and returns instantly; otherwise it connects
 itself (~10–20 s, audio may retry for up to a few minutes):
 
 ```bash
-.venv/bin/python timebox_notify.py --count 5
-.venv/bin/python timebox_notify.py --text "Kaffee ist fertig!" --icon-color 255,180,0
-.venv/bin/python timebox_notify.py --count 12 --silent --brightness 60
+python/.venv/bin/python python/timebox_notify.py --count 5
+python/.venv/bin/python python/timebox_notify.py --text "Kaffee ist fertig!" --icon-color 255,180,0
+python/.venv/bin/python python/timebox_notify.py --count 12 --silent --brightness 60
 ```
 
 ## Security notes
@@ -239,8 +244,9 @@ itself (~10–20 s, audio may retry for up to a few minutes):
   any other device are rejected.
 - The daemon's journal log records notification keys, not content.
 - The KDE bridge eavesdrops the session bus, so it *sees* every notification
-  in-process — but it reads only the app name, forwards only a count, and logs
-  neither. No notification text ever reaches the box (or the air).
+  in-process — but it reads only the app name (plus, for gitify's batch
+  popups, the integer inside), forwards only a count, and logs neither.
+  No notification text ever reaches the box (or the air).
 
 ## Troubleshooting
 
